@@ -5,7 +5,7 @@ from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTyp
 from flask import Flask
 import threading
 
-TOKEN = os.getenv("7669509172:AAH0C2pYoEpj9rskRj5I3vABd_Hc3KqZ3mE")  # نحصل على التوكن من متغير بيئة
+TOKEN = os.getenv("BOT_TOKEN")  # نحصل على التوكن من متغير بيئة
 
 app = Flask('')
 
