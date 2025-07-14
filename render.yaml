@@ -3,7 +3,7 @@ services:
     name: telegram-bot
     env: python
     buildCommand: ""
-    startCommand: Python main.py
+    startCommand: python main.py
     plan: free
     envVars:
       - key: BOT_TOKEN
