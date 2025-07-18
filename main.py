@@ -43,7 +43,7 @@ async def download_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         filename = "episode.mkv"
 
         # أقل من 50 ميجا → نرسلها في تليجرام
-        if size_mb <= 44:
+        if size_mb <= 42:
             response = requests.get(url, stream=True)
             with open(filename, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=1024 * 1024):
