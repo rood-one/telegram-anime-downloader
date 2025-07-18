@@ -152,7 +152,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             threading.Thread(
                 target=lambda: asyncio.run(
                     download_and_upload(update, context)
-            ).start()
+            )).start()
             
             await update.message.reply_text(
                 f"📦 الحلقة كبيرة الحجم ({size_mb:.1f}MB)\n"
