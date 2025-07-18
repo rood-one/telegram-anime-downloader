@@ -7,14 +7,9 @@ import threading
 import time
 import uuid
 import tempfile
-import json
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
 import logging
-import mimetypes
-import re
 import hashlib
+import json
 
 # تكوين السجلات
 logging.basicConfig(
@@ -26,10 +21,6 @@ logger = logging.getLogger(__name__)
 # الحصول على متغيرات البيئة
 TOKEN = os.getenv("BOT_TOKEN")
 MAX_DIRECT_SIZE = 45  # الحد الأقصى لإرسال الملفات مباشرة عبر التلجرام (MB)
-
-# إعدادات Google Drive
-SERVICE_ACCOUNT_JSON = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
-GOOGLE_DRIVE_FOLDER_ID = os.getenv('GOOGLE_DRIVE_FOLDER_ID')
 
 # تطبيق Flask لإبقاء الخادم نشطًا
 app = Flask(__name__)
@@ -47,60 +38,32 @@ def keep_alive():
     flask_thread.daemon = True
     flask_thread.start()
 
-def upload_to_gdrive(file_path, filename):
-    """رفع الملف إلى Google Drive وإرجاع رابط تحميل مباشر"""
+def upload_to_fileio(file_path):
+    """رفع الملف إلى file.io وإرجاع رابط تحميل مباشر"""
     try:
-        logger.info(f"بدء رفع الملف إلى Google Drive: {filename}")
-        
-        # تحويل بيانات حساب الخدمة من JSON إلى قاموس
-        service_account_info = json.loads(SERVICE_ACCOUNT_JSON)
-        
-        # إنشاء بيانات الاعتماد
-        creds = service_account.Credentials.from_service_account_info(
-            service_account_info,
-            scopes=['https://www.googleapis.com/auth/drive']
-        )
-        
-        # بناء خدمة Google Drive
-        drive_service = build('drive', 'v3', credentials=creds)
-        
-        # إنشاء بيانات تعريف الملف
-        file_metadata = {
-            'name': filename,
-            'parents': [GOOGLE_DRIVE_FOLDER_ID.strip()]  # التأكد من إزالة أي مسافات
-        }
-        
-        # إنشاء وسائط الرفع
-        media = MediaFileUpload(
-            file_path,
-            mimetype=mimetypes.guess_type(filename)[0] or 'application/octet-stream',
-            resumable=True
-        )
+        logger.info(f"بدء رفع الملف إلى file.io")
         
         # رفع الملف
-        file = drive_service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id, webContentLink'
-        ).execute()
+        with open(file_path, 'rb') as f:
+            response = requests.post(
+                "https://file.io",
+                files={"file": f},
+                data={"expires": "1d"}  # انتهاء الصلاحية بعد يوم
+            )
         
-        logger.info(f"تم رفع الملف بنجاح: {file['id']}")
+        response.raise_for_status()
+        result = response.json()
         
-        # جعل الملف عامًا للقراءة
-        drive_service.permissions().create(
-            fileId=file['id'],
-            body={'type': 'anyone', 'role': 'reader'}
-        ).execute()
-        
-        # إرجاع رابط التحميل المباشر
-        download_link = file['webContentLink'].replace('&export=download', '')
-        logger.info(f"تم إنشاء رابط التحميل: {download_link}")
-        
-        return download_link
+        if result.get("success"):
+            download_link = result["link"]
+            logger.info(f"تم إنشاء رابط التحميل: {download_link}")
+            return download_link
+        else:
+            raise Exception(f"فشل الرفع: {result.get('message', 'Unknown error')}")
     
     except Exception as e:
-        logger.error(f"فشل الرفع إلى Google Drive: {str(e)}")
-        raise Exception(f"فشل الرفع إلى Google Drive: {str(e)}")
+        logger.error(f"فشل الرفع إلى file.io: {str(e)}")
+        raise Exception(f"فشل الرفع إلى file.io: {str(e)}")
 
 def download_file(url, file_path):
     """تحميل الملف من الرابط وحفظه في مسار محدد"""
@@ -187,7 +150,7 @@ def get_file_size(url):
         raise Exception(f"فشل الحصول على حجم الملف: {str(e)}")
 
 async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE, url):
-    """معالجة الملفات الكبيرة (تحميل + رفع إلى Google Drive)"""
+    """معالجة الملفات الكبيرة (تحميل + رفع إلى file.io)"""
     chat_id = update.message.chat_id
     message = await context.bot.send_message(
         chat_id=chat_id,
@@ -210,13 +173,13 @@ async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             )
             file_size_mb = download_file(url, file_path)
             
-            # رفع الملف إلى Google Drive
+            # رفع الملف إلى file.io
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message.message_id,
-                text="☁️ جاري رفع الحلقة إلى Google Drive..."
+                text="☁️ جاري رفع الحلقة إلى file.io..."
             )
-            download_link = upload_to_gdrive(file_path, filename)
+            download_link = upload_to_fileio(file_path)
             
             # إرسال رابط التحميل
             await context.bot.edit_message_text(
@@ -224,8 +187,8 @@ async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 message_id=message.message_id,
                 text=f"✅ تم الرفع بنجاح!\n"
                      f"📦 حجم الملف: {file_size_mb:.1f} ميجابايت\n\n"
-                     f"🔗 رابط التحميل الدائم:\n{download_link}\n\n"
-                     f"يمكنك تنزيل الحلقة في أي وقت تناسبك"
+                     f"🔗 رابط التحميل:\n{download_link}\n\n"
+                     f"ملاحظة: الرابط صالح لمدة 24 ساعة أو حتى يتم تنزيله"
             )
     
     except Exception as e:
