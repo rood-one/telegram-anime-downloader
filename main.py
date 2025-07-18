@@ -1,77 +1,76 @@
 import os
 import requests
-from telegram import Update, InputFile
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
-from flask import Flask, send_from_directory
-import threading
+from telegram import Update
+from telegram.ext import Updater, CommandHandler, CallbackContext
+from telegram.constants import ChatAction
 
-TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+MAX_SIZE_MB = 43
 
-app = Flask('')
+def get_file_size_mb(url: str) -> float:
+    try:
+        response = requests.head(url, allow_redirects=True)
+        size = int(response.headers.get("Content-Length", 0))
+        return size / (1024 * 1024)
+    except Exception:
+        return 0
 
-@app.route('/')
-def home():
-    return "Bot is alive!"
+def download_file(url: str, file_path: str):
+    with requests.get(url, stream=True) as r:
+        r.raise_for_status()
+        with open(file_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
 
-@app.route('/files/<filename>')
-def serve_file(filename):
-    return send_from_directory('files', filename)
+def handle_start(update: Update, context: CallbackContext):
+    update.message.reply_text("مرحبًا! أرسل لي رابط الحلقة وسأتولى الباقي 🎬")
 
-def run():
-    app.run(host='0.0.0.0', port=8080)
-
-def keep_alive():
-    thread = threading.Thread(target=run)
-    thread.start()
-
-async def download_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
-
+def handle_url(update: Update, context: CallbackContext):
     url = update.message.text.strip()
+    chat_id = update.effective_chat.id
 
-    if not url.startswith('http'):
-        await update.message.reply_text("أرسل لي رابط التحميل المباشر فقط.")
-        return
+    update.message.reply_text("طلبك قيد المعالجة... ⏳")
+    context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
     try:
-        # الخطوة 1: معرفة حجم الملف من الـ HEAD فقط
-        head = requests.head(url)
-        file_size = int(head.headers.get('Content-Length', 0))
-        size_mb = file_size / (1024 * 1024)
+        size_mb = get_file_size_mb(url)
 
-        filename = "episode.mkv"
+        if size_mb == 0:
+            update.message.reply_text("تعذر التحقق من حجم الملف أو الرابط غير صالح ❌")
+            return
 
-        # أقل من 50 ميجا → نرسلها في تليجرام
-        if size_mb <= 42:
-            response = requests.get(url, stream=True)
-            with open(filename, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        f.write(chunk)
-
-            await update.message.reply_document(document=InputFile(open(filename, 'rb')), filename=filename)
+        if size_mb <= MAX_SIZE_MB:
+            filename = "episode.mkv"
+            download_file(url, filename)
+            context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_VIDEO)
+            context.bot.send_video(chat_id=chat_id, video=open(filename, "rb"), caption=f"📦 الحجم: {size_mb:.2f}MB")
             os.remove(filename)
-
-        # أكثر من 50 ميجا → نخزنها ونرسل رابط فقط
         else:
-            os.makedirs('files', exist_ok=True)
-            filepath = f"files/{filename}"
-            response = requests.get(url, stream=True)
-            with open(filepath, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        f.write(chunk)
-
-            base_url = os.getenv('RENDER_EXTERNAL_HOSTNAME') or 'your-bot.onrender.com'
-            file_url = f"https://{base_url}/files/{filename}"
-            await update.message.reply_text(f"الحلقة أكبر من 50MB، يمكنك تحميلها من هنا:\n{file_url}")
+            update.message.reply_text(
+                f"⚠️ حجم الحلقة كبير ({size_mb:.2f}MB) ولا يمكن إرسالها عبر Telegram.\n"
+                f"🔗 رابط التحميل: {url}"
+            )
 
     except Exception as e:
-        await update.message.reply_text(f"حدث خطأ: {e}")
+        update.message.reply_text(f"حدث خطأ أثناء المعالجة ⚠️\n{e}")
 
-keep_alive()
+def main():
+    updater = Updater(BOT_TOKEN, use_context=True)
+    dp = updater.dispatcher
 
-app_bot = ApplicationBuilder().token(TOKEN).build()
-app_bot.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), download_and_send))
-app_bot.run_polling()
+    dp.add_handler(CommandHandler("start", handle_start))
+    dp.add_handler(CommandHandler("help", handle_start))
+    dp.add_handler(CommandHandler("episode", handle_url))
+    dp.add_handler(CommandHandler("link", handle_url))
+    dp.add_handler(CommandHandler("video", handle_url))
+
+    # التعامل مع أي رسالة كرابط
+    dp.add_handler(CommandHandler("", handle_url))  # احتياطي
+    dp.add_handler(CommandHandler("text", handle_url))
+    dp.add_handler(CommandHandler("url", handle_url))
+
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == "__main__":
+    main()
