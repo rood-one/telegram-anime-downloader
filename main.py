@@ -1,97 +1,99 @@
 import os
 import requests
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-from urllib.parse import urlparse
+from telegram import Update, InputFile
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from flask import Flask, send_from_directory
+import threading
+import time
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-MAX_SIZE_MB = 45  # تخفيض الحد الأقصى لحجم الملف
+TOKEN = os.getenv("BOT_TOKEN")
+MAX_DIRECT_SIZE = 45  # الحد الأقصى للإرسال المباشر (MB)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("أرسل رابط الحلقة 👇")
+app = Flask('')
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text
-    await update.message.reply_text("✅ تم استلام الرابط، جاري المعالجة...")
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+@app.route('/files/<filename>')
+def serve_file(filename):
+    return send_from_directory('files', filename)
+
+def run_flask():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    thread = threading.Thread(target=run_flask)
+    thread.start()
+
+async def download_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+
+    url = update.message.text.strip()
+
+    if not url.startswith('http'):
+        await update.message.reply_text("أرسل لي رابط التحميل المباشر فقط.")
+        return
 
     try:
-        # التحقق من صحة الرابط
-        parsed_url = urlparse(url)
-        if not all([parsed_url.scheme, parsed_url.netloc]):
-            await update.message.reply_text("❌ رابط غير صالح")
-            return
-
-        # الحصول على حجم الملف دون تنزيل كامل
-        response = requests.head(url, allow_redirects=True, timeout=10)
-        response.raise_for_status()
+        # 1. الحصول على حجم الملف
+        head = requests.head(url, allow_redirects=True)
+        file_size = int(head.headers.get('Content-Length', 0))
+        size_mb = file_size / (1024 * 1024)
         
-        content_length = response.headers.get('Content-Length')
-        if not content_length:
-            await update.message.reply_text("❌ لا يمكن تحديد حجم الملف")
-            return
+        filename = os.path.basename(url).split("?")[0] or "episode.mkv"
 
-        size_mb = int(content_length) / (1024 * 1024)
-        filename = os.path.basename(parsed_url.path) or "episode.mkv"
+        # 2. إذا كان الملف صغيراً
+        if size_mb <= MAX_DIRECT_SIZE:
+            await update.message.reply_text(f"جاري تحميل الحلقة ({size_mb:.1f}MB)...")
+            response = requests.get(url, stream=True)
+            temp_file = f"temp_{int(time.time())}.mkv"
+            
+            with open(temp_file, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=1024*1024):
+                    if chunk:
+                        f.write(chunk)
+            
+            await update.message.reply_document(
+                document=InputFile(open(temp_file, 'rb')),
+                filename=filename
+            )
+            os.remove(temp_file)
 
-        # إرسال الرابط مباشرة إذا تجاوز الحجم المسموح
-        if size_mb > MAX_SIZE_MB:
+        # 3. إذا كان الملف كبيراً
+        else:
+            await update.message.reply_text(f"الحلقة كبيرة ({size_mb:.1f}MB)، جاري التحميل إلى السيرفر...")
+            
+            # إنشاء مجلد الملفات
+            os.makedirs('files', exist_ok=True)
+            filepath = os.path.join('files', filename)
+            
+            # تحميل الملف إلى مجلد files
+            response = requests.get(url, stream=True)
+            with open(filepath, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=1024*1024):
+                    if chunk:
+                        f.write(chunk)
+            
+            # إنشاء رابط مباشر
+            base_url = os.getenv('RENDER_EXTERNAL_HOSTNAME', 'your-bot.onrender.com')
+            file_url = f"https://{base_url}/files/{filename}"
+            
             await update.message.reply_text(
-                f"📦 حجم الملف: {round(size_mb, 2)}MB (يتجاوز الحد {MAX_SIZE_MB}MB)\n"
-                f"🔗 استخدم الرابط مباشرة:\n{url}"
+                f"تم التحميل بنجاح!\n"
+                f"رابط التحميل المباشر:\n{file_url}\n\n"
+                "ملاحظة: الرابط صالح لمدة 15 دقيقة فقط."
             )
-            return
 
-        await update.message.reply_text(f"⏳ جاري التحميل ({round(size_mb, 2)}MB)...")
-        
-        # تنزيل الملف بقطع صغيرة
-        response = requests.get(url, stream=True, timeout=30)
-        response.raise_for_status()
-        
-        with open(filename, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=10240):
-                if chunk:
-                    f.write(chunk)
-        
-        # التحقق من الحجم الفعلي بعد التنزيل
-        actual_size = os.path.getsize(filename) / (1024 * 1024)
-        if actual_size > MAX_SIZE_MB:
-            await update.message.reply_text(
-                f"⚠️ تجاوز الحد بعد التنزيل ({round(actual_size, 2)}MB)\n"
-                f"🔗 استخدم الرابط مباشرة:\n{url}"
-            )
-            os.remove(filename)
-            return
-
-        # إرسال الملف مع معالجة الأخطاء
-        try:
-            await update.message.reply_video(
-                video=open(filename, 'rb'),
-                supports_streaming=True,
-                read_timeout=60,
-                write_timeout=60,
-                connect_timeout=60,
-                pool_timeout=60
-            )
-        except Exception as send_error:
-            await update.message.reply_text(
-                f"❌ فشل الإرسال: {str(send_error)}\n"
-                f"🔗 استخدم الرابط مباشرة:\n{url}"
-            )
-        finally:
-            if os.path.exists(filename):
-                os.remove(filename)
-
-    except requests.exceptions.RequestException as req_error:
-        await update.message.reply_text(f"❌ خطأ في الاتصال: {str(req_error)}")
     except Exception as e:
-        await update.message.reply_text(f"❌ خطأ غير متوقع: {str(e)}")
+        await update.message.reply_text(f"حدث خطأ: {str(e)}")
 
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("🤖 البوت يعمل الآن...")
-    app.run_polling()
+# تشغيل الخادم المساعد
+keep_alive()
 
-if __name__ == "__main__":
-    main()
+# تشغيل البوت
+if __name__ == '__main__':
+    app_bot = ApplicationBuilder().token(TOKEN).build()
+    app_bot.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), download_and_send))
+    app_bot.run_polling()
