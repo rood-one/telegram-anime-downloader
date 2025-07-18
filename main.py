@@ -13,6 +13,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 import logging
 import mimetypes
+import re
 
 # تكوين السجلات
 logging.basicConfig(
@@ -105,16 +106,21 @@ def download_file(url, file_path):
     try:
         logger.info(f"بدء تحميل الملف: {url}")
         
-        # الحصول على حجم الملف
-        head = requests.head(url, allow_redirects=True)
-        head.raise_for_status()
-        file_size = int(head.headers.get('Content-Length', 0))
-        size_mb = file_size / (1024 * 1024)
-        logger.info(f"حجم الملف: {size_mb:.2f} MB")
+        # إضافة رأس المستخدم لتجنب حظر الطلبات
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': '*/*',
+            'Connection': 'keep-alive'
+        }
         
         # تحميل الملف
-        response = requests.get(url, stream=True)
+        response = requests.get(url, headers=headers, stream=True)
         response.raise_for_status()
+        
+        # الحصول على حجم الملف من الرأس
+        file_size = int(response.headers.get('Content-Length', 0))
+        size_mb = file_size / (1024 * 1024)
+        logger.info(f"حجم الملف: {size_mb:.2f} MB")
         
         # كتابة الملف
         downloaded = 0
@@ -136,11 +142,28 @@ def download_file(url, file_path):
                         )
         
         logger.info(f"تم تحميل الملف بنجاح: {file_path}")
-        return True
+        return size_mb
     
     except Exception as e:
         logger.error(f"فشل تحميل الملف: {str(e)}")
         raise Exception(f"فشل تحميل الملف: {str(e)}")
+
+def extract_filename_from_url(url):
+    """استخراج اسم الملف من الرابط"""
+    try:
+        # تحليل الرابط لاستخراج اسم الملف
+        base_url = url.split('?')[0]  # إزالة أي معاملات
+        filename = os.path.basename(base_url)
+        
+        # إذا كان الرابط ينتهي بامتداد ملف
+        if '.' in filename:
+            return filename
+        
+        # إذا لم يتم العثور على اسم ملف واضح
+        return f"anime_{int(time.time())}_{uuid.uuid4().hex[:6]}.mkv"
+    
+    except:
+        return f"anime_{int(time.time())}_{uuid.uuid4().hex[:6]}.mkv"
 
 async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE, url):
     """معالجة الملفات الكبيرة (تحميل + رفع إلى Google Drive)"""
@@ -152,7 +175,7 @@ async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
     
     try:
         # إنشاء اسم فريد للملف
-        filename = f"anime_{int(time.time())}_{uuid.uuid4().hex[:6]}.mkv"
+        filename = extract_filename_from_url(url)
         
         # إنشاء مجلد مؤقت
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -164,7 +187,7 @@ async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 message_id=message.message_id,
                 text="📥 جاري تحميل الحلقة من السيرفر..."
             )
-            download_file(url, file_path)
+            file_size_mb = download_file(url, file_path)
             
             # رفع الملف إلى Google Drive
             await context.bot.edit_message_text(
@@ -178,7 +201,8 @@ async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message.message_id,
-                text=f"✅ تم الرفع بنجاح!\n\n"
+                text=f"✅ تم الرفع بنجاح!\n"
+                     f"📦 حجم الملف: {file_size_mb:.1f} ميجابايت\n\n"
                      f"🔗 رابط التحميل الدائم:\n{download_link}\n\n"
                      f"يمكنك تنزيل الحلقة في أي وقت تناسبك"
             )
@@ -201,7 +225,7 @@ async def process_small_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
     
     try:
         # إنشاء اسم فريد للملف
-        filename = f"anime_{int(time.time())}.mkv"
+        filename = extract_filename_from_url(url)
         
         # إنشاء مجلد مؤقت
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -213,7 +237,7 @@ async def process_small_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 message_id=message.message_id,
                 text="📥 جاري تحميل الحلقة..."
             )
-            download_file(url, file_path)
+            file_size_mb = download_file(url, file_path)
             
             # إرسال الملف
             await context.bot.edit_message_text(
@@ -223,8 +247,8 @@ async def process_small_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             )
             await context.bot.send_document(
                 chat_id=chat_id,
-                document=InputFile(open(file_path, 'rb')),
-                filename=filename
+                document=InputFile(open(file_path, 'rb'), filename=filename),
+                caption=f"📦 حجم الملف: {file_size_mb:.1f} ميجابايت"
             )
             
             # حذف الرسالة الأصلية
@@ -241,6 +265,34 @@ async def process_small_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             text=f"❌ حدث خطأ أثناء المعالجة: {str(e)}"
         )
 
+def get_file_size(url):
+    """الحصول على حجم الملف باستخدام طريقة GET بدلاً من HEAD"""
+    try:
+        # إضافة رأس المستخدم لتجنب حظر الطلبات
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Range': 'bytes=0-1'  # طلب جزء صغير فقط للحصول على الرأس
+        }
+        
+        # استخدام GET مع نطاق محدود للحصول على حجم الملف
+        response = requests.get(url, headers=headers, stream=True)
+        response.raise_for_status()
+        
+        # الحصول على حجم الملف من الرأس
+        content_range = response.headers.get('Content-Range')
+        if content_range:
+            # تنسيق Content-Range: bytes 0-1/123456
+            file_size = int(content_range.split('/')[1])
+        else:
+            # إذا لم يكن هناك Content-Range، استخدم Content-Length
+            file_size = int(response.headers.get('Content-Length', 0))
+        
+        return file_size
+    
+    except Exception as e:
+        logger.error(f"فشل الحصول على حجم الملف: {str(e)}")
+        raise Exception(f"فشل الحصول على حجم الملف: {str(e)}")
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """معالجة الرسائل الواردة"""
     if not update.message or not update.message.text:
@@ -254,14 +306,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        # الحصول على حجم الملف
-        head = requests.head(url, allow_redirects=True)
-        head.raise_for_status()
-        file_size = int(head.headers.get('Content-Length', 0))
+        # الحصول على حجم الملف باستخدام الطريقة الجديدة
+        file_size = get_file_size(url)
         size_mb = file_size / (1024 * 1024)
         
         # استخراج اسم الملف من الرابط
-        filename = os.path.basename(url).split("?")[0] or f"anime_{int(time.time())}.mkv"
+        filename = extract_filename_from_url(url)
         
         # إعلام المستخدم بحجم الملف
         await update.message.reply_text(
