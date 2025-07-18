@@ -14,6 +14,7 @@ from googleapiclient.http import MediaFileUpload
 import logging
 import mimetypes
 import re
+import hashlib
 
 # تكوين السجلات
 logging.basicConfig(
@@ -66,7 +67,7 @@ def upload_to_gdrive(file_path, filename):
         # إنشاء بيانات تعريف الملف
         file_metadata = {
             'name': filename,
-            'parents': [GOOGLE_DRIVE_FOLDER_ID]
+            'parents': [GOOGLE_DRIVE_FOLDER_ID.strip()]  # التأكد من إزالة أي مسافات
         }
         
         # إنشاء وسائط الرفع
@@ -148,22 +149,42 @@ def download_file(url, file_path):
         logger.error(f"فشل تحميل الملف: {str(e)}")
         raise Exception(f"فشل تحميل الملف: {str(e)}")
 
-def extract_filename_from_url(url):
-    """استخراج اسم الملف من الرابط"""
+def generate_filename(url):
+    """إنشاء اسم ملف قصير وفريد باستخدام تجزئة الرابط"""
     try:
-        # تحليل الرابط لاستخراج اسم الملف
-        base_url = url.split('?')[0]  # إزالة أي معاملات
-        filename = os.path.basename(base_url)
-        
-        # إذا كان الرابط ينتهي بامتداد ملف
-        if '.' in filename:
-            return filename
-        
-        # إذا لم يتم العثور على اسم ملف واضح
-        return f"anime_{int(time.time())}_{uuid.uuid4().hex[:6]}.mkv"
-    
+        # إنشاء تجزئة للرابط لتقصير الاسم
+        url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
+        return f"anime_{url_hash}.mkv"
     except:
         return f"anime_{int(time.time())}_{uuid.uuid4().hex[:6]}.mkv"
+
+def get_file_size(url):
+    """الحصول على حجم الملف باستخدام طريقة GET بدلاً من HEAD"""
+    try:
+        # إضافة رأس المستخدم لتجنب حظر الطلبات
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Range': 'bytes=0-1'  # طلب جزء صغير فقط للحصول على الرأس
+        }
+        
+        # استخدام GET مع نطاق محدود للحصول على حجم الملف
+        response = requests.get(url, headers=headers, stream=True)
+        response.raise_for_status()
+        
+        # الحصول على حجم الملف من الرأس
+        content_range = response.headers.get('Content-Range')
+        if content_range:
+            # تنسيق Content-Range: bytes 0-1/123456
+            file_size = int(content_range.split('/')[1])
+        else:
+            # إذا لم يكن هناك Content-Range، استخدم Content-Length
+            file_size = int(response.headers.get('Content-Length', 0))
+        
+        return file_size
+    
+    except Exception as e:
+        logger.error(f"فشل الحصول على حجم الملف: {str(e)}")
+        raise Exception(f"فشل الحصول على حجم الملف: {str(e)}")
 
 async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE, url):
     """معالجة الملفات الكبيرة (تحميل + رفع إلى Google Drive)"""
@@ -174,8 +195,8 @@ async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
     )
     
     try:
-        # إنشاء اسم فريد للملف
-        filename = extract_filename_from_url(url)
+        # إنشاء اسم فريد وقصير للملف
+        filename = generate_filename(url)
         
         # إنشاء مجلد مؤقت
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -224,8 +245,8 @@ async def process_small_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
     )
     
     try:
-        # إنشاء اسم فريد للملف
-        filename = extract_filename_from_url(url)
+        # إنشاء اسم فريد وقصير للملف
+        filename = generate_filename(url)
         
         # إنشاء مجلد مؤقت
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -265,34 +286,6 @@ async def process_small_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             text=f"❌ حدث خطأ أثناء المعالجة: {str(e)}"
         )
 
-def get_file_size(url):
-    """الحصول على حجم الملف باستخدام طريقة GET بدلاً من HEAD"""
-    try:
-        # إضافة رأس المستخدم لتجنب حظر الطلبات
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Range': 'bytes=0-1'  # طلب جزء صغير فقط للحصول على الرأس
-        }
-        
-        # استخدام GET مع نطاق محدود للحصول على حجم الملف
-        response = requests.get(url, headers=headers, stream=True)
-        response.raise_for_status()
-        
-        # الحصول على حجم الملف من الرأس
-        content_range = response.headers.get('Content-Range')
-        if content_range:
-            # تنسيق Content-Range: bytes 0-1/123456
-            file_size = int(content_range.split('/')[1])
-        else:
-            # إذا لم يكن هناك Content-Range، استخدم Content-Length
-            file_size = int(response.headers.get('Content-Length', 0))
-        
-        return file_size
-    
-    except Exception as e:
-        logger.error(f"فشل الحصول على حجم الملف: {str(e)}")
-        raise Exception(f"فشل الحصول على حجم الملف: {str(e)}")
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """معالجة الرسائل الواردة"""
     if not update.message or not update.message.text:
@@ -310,14 +303,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_size = get_file_size(url)
         size_mb = file_size / (1024 * 1024)
         
-        # استخراج اسم الملف من الرابط
-        filename = extract_filename_from_url(url)
-        
         # إعلام المستخدم بحجم الملف
         await update.message.reply_text(
             f"🔍 تم التعرف على حلقة الأنمي\n"
-            f"📦 الحجم: {size_mb:.1f} ميجابايت\n"
-            f"📄 الاسم: {filename}\n\n"
+            f"📦 الحجم: {size_mb:.1f} ميجابايت\n\n"
             f"⏳ جاري بدء العملية..."
         )
         
