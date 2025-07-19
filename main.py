@@ -9,6 +9,7 @@ import uuid
 import tempfile
 import logging
 import hashlib
+import re
 
 # تكوين السجلات
 logging.basicConfig(
@@ -26,7 +27,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is alive!"
+    return "Bot is alive and running!"
 
 def run_flask():
     app.run(host='0.0.0.0', port=8080)
@@ -37,16 +38,16 @@ def keep_alive():
     flask_thread.daemon = True
     flask_thread.start()
 
-def upload_to_transfersh(file_path, filename):
-    """رفع الملف إلى transfer.sh وإرجاع رابط تحميل مباشر"""
+def upload_to_0x0(file_path, filename):
+    """رفع الملف إلى 0x0.st وإرجاع رابط تحميل مباشر"""
     try:
-        logger.info(f"بدء رفع الملف إلى transfer.sh: {filename}")
+        logger.info(f"بدء رفع الملف إلى 0x0.st: {filename}")
         
-        # رفع الملف مع اسم الملف المخصص
+        # رفع الملف
         with open(file_path, 'rb') as f:
-            response = requests.put(
-                f"https://transfer.sh/{filename}",
-                data=f
+            response = requests.post(
+                "https://0x0.st",
+                files={"file": (filename, f)}
             )
         
         response.raise_for_status()
@@ -56,8 +57,8 @@ def upload_to_transfersh(file_path, filename):
         return download_link
     
     except Exception as e:
-        logger.error(f"فشل الرفع إلى transfer.sh: {str(e)}")
-        raise Exception(f"فشل الرفع إلى transfer.sh: {str(e)}")
+        logger.error(f"فشل الرفع إلى 0x0.st: {str(e)}")
+        raise Exception(f"فشل الرفع إلى 0x0.st: {str(e)}")
 
 def download_file(url, file_path):
     """تحميل الملف من الرابط وحفظه في مسار محدد"""
@@ -106,14 +107,10 @@ def download_file(url, file_path):
         logger.error(f"فشل تحميل الملف: {str(e)}")
         raise Exception(f"فشل تحميل الملف: {str(e)}")
 
-def generate_filename(url):
-    """إنشاء اسم ملف قصير وفريد باستخدام تجزئة الرابط"""
-    try:
-        # إنشاء تجزئة للرابط لتقصير الاسم
-        url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
-        return f"anime_{url_hash}.mkv"
-    except:
-        return f"anime_{int(time.time())}_{uuid.uuid4().hex[:6]}.mkv"
+def sanitize_filename(name):
+    """تنظيف اسم الملف وإزالة الأحرف غير المسموح بها"""
+    # إزالة أي أحرف غير آمنة في أسماء الملفات
+    return re.sub(r'[^\w\-_. ]', '', name).strip()
 
 def get_file_size(url):
     """الحصول على حجم الملف باستخدام طريقة GET بدلاً من HEAD"""
@@ -143,8 +140,8 @@ def get_file_size(url):
         logger.error(f"فشل الحصول على حجم الملف: {str(e)}")
         raise Exception(f"فشل الحصول على حجم الملف: {str(e)}")
 
-async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE, url):
-    """معالجة الملفات الكبيرة (تحميل + رفع إلى transfer.sh)"""
+async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE, url, filename):
+    """معالجة الملفات الكبيرة (تحميل + رفع إلى 0x0.st)"""
     chat_id = update.message.chat_id
     message = await context.bot.send_message(
         chat_id=chat_id,
@@ -152,9 +149,6 @@ async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
     )
     
     try:
-        # إنشاء اسم فريد وقصير للملف
-        filename = generate_filename(url)
-        
         # إنشاء مجلد مؤقت
         with tempfile.TemporaryDirectory() as temp_dir:
             file_path = os.path.join(temp_dir, filename)
@@ -167,22 +161,23 @@ async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             )
             file_size_mb = download_file(url, file_path)
             
-            # رفع الملف إلى transfer.sh
+            # رفع الملف إلى 0x0.st
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message.message_id,
-                text="☁️ جاري رفع الحلقة إلى transfer.sh..."
+                text="☁️ جاري رفع الحلقة إلى 0x0.st..."
             )
-            download_link = upload_to_transfersh(file_path, filename)
+            download_link = upload_to_0x0(file_path, filename)
             
             # إرسال رابط التحميل
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message.message_id,
                 text=f"✅ تم الرفع بنجاح!\n"
-                     f"📦 حجم الملف: {file_size_mb:.1f} ميجابايت\n\n"
+                     f"📦 حجم الملف: {file_size_mb:.1f} ميجابايت\n"
+                     f"📄 اسم الحلقة: {filename}\n\n"
                      f"🔗 رابط التحميل:\n{download_link}\n\n"
-                     f"ملاحظة: الرابط صالح لمدة 14 يومًا"
+                     f"ملاحظة: الرابط صالح لمدة 30 يومًا"
             )
     
     except Exception as e:
@@ -193,7 +188,7 @@ async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             text=f"❌ حدث خطأ أثناء المعالجة: {str(e)}"
         )
 
-async def process_small_file(update: Update, context: ContextTypes.DEFAULT_TYPE, url):
+async def process_small_file(update: Update, context: ContextTypes.DEFAULT_TYPE, url, filename):
     """معالجة الملفات الصغيرة (إرسال مباشر عبر التلجرام)"""
     chat_id = update.message.chat_id
     message = await context.bot.send_message(
@@ -202,9 +197,6 @@ async def process_small_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
     )
     
     try:
-        # إنشاء اسم فريد وقصير للملف
-        filename = generate_filename(url)
-        
         # إنشاء مجلد مؤقت
         with tempfile.TemporaryDirectory() as temp_dir:
             file_path = os.path.join(temp_dir, filename)
@@ -226,7 +218,7 @@ async def process_small_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await context.bot.send_document(
                 chat_id=chat_id,
                 document=InputFile(open(file_path, 'rb'), filename=filename),
-                caption=f"📦 حجم الملف: {file_size_mb:.1f} ميجابايت"
+                caption=f"📦 حجم الملف: {file_size_mb:.1f} ميجابايت\n📄 اسم الحلقة: {filename}"
             )
             
             # حذف الرسالة الأصلية
@@ -243,35 +235,56 @@ async def process_small_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             text=f"❌ حدث خطأ أثناء المعالجة: {str(e)}"
         )
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة الرسائل الواردة"""
-    if not update.message or not update.message.text:
-        return
-    
+async def request_episode_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """طلب اسم الحلقة من المستخدم"""
+    chat_id = update.message.chat_id
     url = update.message.text.strip()
     
-    # التحقق من صحة الرابط
-    if not url.startswith('http'):
-        await update.message.reply_text("⚠️ الرابط غير صالح. أرسل رابط تحميل مباشر فقط.")
+    # حفظ الرابط في سياق المحادثة
+    context.user_data['url'] = url
+    
+    # إرسال رسالة تطلب اسم الحلقة
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="📝 الرجاء إرسال اسم الحلقة (مثال: One Piece Episode 1000):"
+    )
+
+async def handle_episode_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة اسم الحلقة الذي أدخله المستخدم"""
+    chat_id = update.message.chat_id
+    episode_name = update.message.text.strip()
+    
+    # تنظيف اسم الحلقة
+    filename = sanitize_filename(episode_name) + ".mkv"
+    
+    # استرجاع الرابط من سياق المحادثة
+    url = context.user_data.get('url', '')
+    
+    if not url:
+        await update.message.reply_text("❌ لم يتم العثور على رابط الحلقة. يرجى إعادة المحاولة.")
         return
     
+    # مسح البيانات المؤقتة
+    context.user_data.clear()
+    
     try:
-        # الحصول على حجم الملف باستخدام الطريقة الجديدة
+        # الحصول على حجم الملف
         file_size = get_file_size(url)
         size_mb = file_size / (1024 * 1024)
         
         # إعلام المستخدم بحجم الملف
         await update.message.reply_text(
             f"🔍 تم التعرف على حلقة الأنمي\n"
-            f"📦 الحجم: {size_mb:.1f} ميجابايت\n\n"
+            f"📦 الحجم: {size_mb:.1f} ميجابايت\n"
+            f"📄 اسم الحلقة: {filename}\n\n"
             f"⏳ جاري بدء العملية..."
         )
         
         # تحديد طريقة المعالجة بناءً على حجم الملف
         if size_mb <= MAX_DIRECT_SIZE:
-            await process_small_file(update, context, url)
+            await process_small_file(update, context, url, filename)
         else:
-            await process_large_file(update, context, url)
+            await process_large_file(update, context, url, filename)
     
     except requests.RequestException as e:
         logger.error(f"خطأ في الاتصال: {str(e)}")
@@ -279,6 +292,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"خطأ غير متوقع: {str(e)}")
         await update.message.reply_text(f"❌ حدث خطأ غير متوقع: {str(e)}")
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة الرسائل الواردة"""
+    if not update.message or not update.message.text:
+        return
+    
+    text = update.message.text.strip()
+    
+    # إذا كان النص يحتوي على رابط
+    if text.startswith('http'):
+        await request_episode_name(update, context)
+    else:
+        # إذا كان المستخدم يرسل اسم الحلقة فقط
+        if 'url' in context.user_data:
+            await handle_episode_name(update, context)
+        else:
+            await update.message.reply_text("⚠️ يرجى إرسال رابط الحلقة أولاً")
 
 def main():
     """الدالة الرئيسية لتشغيل البوت"""
@@ -288,7 +318,16 @@ def main():
     # إنشاء وتشغيل بوت التلجرام
     logger.info("جاري تشغيل بوت التلجرام...")
     app_bot = ApplicationBuilder().token(TOKEN).build()
-    app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # إضافة معالجين: واحد للروابط وواحد لأسماء الحلقات
+    app_bot.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.Regex(r'^https?://'),
+        request_episode_name
+    ))
+    app_bot.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        handle_episode_name
+    ))
     
     logger.info("البوت يعمل الآن!")
     app_bot.run_polling()
