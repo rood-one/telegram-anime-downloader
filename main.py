@@ -38,28 +38,23 @@ def keep_alive():
     flask_thread.daemon = True
     flask_thread.start()
 
-def upload_to_0x0(file_path, filename):
-    """رفع الملف إلى 0x0.st وإرجاع رابط تحميل مباشر"""
+def upload_to_pixeldrain(file_path):
     try:
-        logger.info(f"بدء رفع الملف إلى 0x0.st: {filename}")
-        
-        # رفع الملف
+        logger.info(f"رفع إلى Pixeldrain: {file_path}")
         with open(file_path, 'rb') as f:
             response = requests.post(
-                "https://0x0.st",
-                files={"file": (filename, f)}
+                'https://pixeldrain.com/api/file',
+                files={'file': f}
             )
-        
         response.raise_for_status()
-        download_link = response.text.strip()
-        logger.info(f"تم إنشاء رابط التحميل: {download_link}")
-        
-        return download_link
-    
+        file_id = response.json().get('id')
+        if file_id:
+            return f"https://pixeldrain.com/api/file/{file_id}"
+        else:
+            raise Exception("فشل في الحصول على ID الملف")
     except Exception as e:
-        logger.error(f"فشل الرفع إلى 0x0.st: {str(e)}")
-        raise Exception(f"فشل الرفع إلى 0x0.st: {str(e)}")
-
+        logger.error(f"فشل الرفع إلى Pixeldrain: {str(e)}")
+        raise Exception(f"فشل الرفع إلى Pixeldrain: {str(e)}")
 def download_file(url, file_path):
     """تحميل الملف من الرابط وحفظه في مسار محدد"""
     try:
@@ -167,7 +162,7 @@ async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 message_id=message.message_id,
                 text="☁️ جاري رفع الحلقة إلى 0x0.st..."
             )
-            download_link = upload_to_0x0(file_path, filename)
+            download_link = upload_to_pixeldrain(file_path, filename)
             
             # إرسال رابط التحميل
             await context.bot.edit_message_text(
