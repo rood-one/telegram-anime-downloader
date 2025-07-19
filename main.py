@@ -9,7 +9,6 @@ import uuid
 import tempfile
 import logging
 import hashlib
-import json
 
 # تكوين السجلات
 logging.basicConfig(
@@ -38,32 +37,27 @@ def keep_alive():
     flask_thread.daemon = True
     flask_thread.start()
 
-def upload_to_fileio(file_path):
-    """رفع الملف إلى file.io وإرجاع رابط تحميل مباشر"""
+def upload_to_transfersh(file_path, filename):
+    """رفع الملف إلى transfer.sh وإرجاع رابط تحميل مباشر"""
     try:
-        logger.info(f"بدء رفع الملف إلى file.io")
+        logger.info(f"بدء رفع الملف إلى transfer.sh: {filename}")
         
-        # رفع الملف
+        # رفع الملف مع اسم الملف المخصص
         with open(file_path, 'rb') as f:
-            response = requests.post(
-                "https://file.io",
-                files={"file": f},
-                data={"expires": "1d"}  # انتهاء الصلاحية بعد يوم
+            response = requests.put(
+                f"https://transfer.sh/{filename}",
+                data=f
             )
         
         response.raise_for_status()
-        result = response.json()
+        download_link = response.text.strip()
+        logger.info(f"تم إنشاء رابط التحميل: {download_link}")
         
-        if result.get("success"):
-            download_link = result["link"]
-            logger.info(f"تم إنشاء رابط التحميل: {download_link}")
-            return download_link
-        else:
-            raise Exception(f"فشل الرفع: {result.get('message', 'Unknown error')}")
+        return download_link
     
     except Exception as e:
-        logger.error(f"فشل الرفع إلى file.io: {str(e)}")
-        raise Exception(f"فشل الرفع إلى file.io: {str(e)}")
+        logger.error(f"فشل الرفع إلى transfer.sh: {str(e)}")
+        raise Exception(f"فشل الرفع إلى transfer.sh: {str(e)}")
 
 def download_file(url, file_path):
     """تحميل الملف من الرابط وحفظه في مسار محدد"""
@@ -150,7 +144,7 @@ def get_file_size(url):
         raise Exception(f"فشل الحصول على حجم الملف: {str(e)}")
 
 async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE, url):
-    """معالجة الملفات الكبيرة (تحميل + رفع إلى file.io)"""
+    """معالجة الملفات الكبيرة (تحميل + رفع إلى transfer.sh)"""
     chat_id = update.message.chat_id
     message = await context.bot.send_message(
         chat_id=chat_id,
@@ -173,13 +167,13 @@ async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             )
             file_size_mb = download_file(url, file_path)
             
-            # رفع الملف إلى file.io
+            # رفع الملف إلى transfer.sh
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message.message_id,
-                text="☁️ جاري رفع الحلقة إلى file.io..."
+                text="☁️ جاري رفع الحلقة إلى transfer.sh..."
             )
-            download_link = upload_to_fileio(file_path)
+            download_link = upload_to_transfersh(file_path, filename)
             
             # إرسال رابط التحميل
             await context.bot.edit_message_text(
@@ -188,7 +182,7 @@ async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 text=f"✅ تم الرفع بنجاح!\n"
                      f"📦 حجم الملف: {file_size_mb:.1f} ميجابايت\n\n"
                      f"🔗 رابط التحميل:\n{download_link}\n\n"
-                     f"ملاحظة: الرابط صالح لمدة 24 ساعة أو حتى يتم تنزيله"
+                     f"ملاحظة: الرابط صالح لمدة 14 يومًا"
             )
     
     except Exception as e:
