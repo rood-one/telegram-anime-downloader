@@ -38,13 +38,14 @@ def keep_alive():
     flask_thread.daemon = True
     flask_thread.start()
 
-def upload_to_pixeldrain(file_path):
+def upload_to_pixeldrain(file_path, filename=None):
     try:
         logger.info(f"رفع إلى Pixeldrain: {file_path}")
         with open(file_path, 'rb') as f:
+            files = {'file': (filename, f)} if filename else {'file': f}
             response = requests.post(
                 'https://pixeldrain.com/api/file',
-                files={'file': f}
+                files=files
             )
         response.raise_for_status()
         file_id = response.json().get('id')
