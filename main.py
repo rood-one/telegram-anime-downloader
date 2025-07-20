@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 # الحصول على متغيرات البيئة
 TOKEN = os.getenv("BOT_TOKEN")
 MAX_DIRECT_SIZE = 45  # الحد الأقصى لإرسال الملفات مباشرة عبر التلجرام (MB)
-CHUNK_SIZE = 100 * 1024 * 1024  # حجم الجزء للرفع المجزأ (100MB)
 
 # تطبيق Flask لإبقاء الخادم نشطًا
 app = Flask(__name__)
@@ -41,66 +40,41 @@ def keep_alive():
     flask_thread.start()
 
 def upload_to_pixeldrain(file_path, filename=None):
-    """رفع الملف إلى Pixeldrain مع دعم الرفع المجزأ وإعادة المحاولة"""
-    file_id = None
+    """رفع الملف إلى Pixeldrain باستخدام الطريقة الصحيحة"""
     max_retries = 3
-    chunk_size = CHUNK_SIZE
-    file_size = os.path.getsize(file_path)
-    total_chunks = math.ceil(file_size / chunk_size)
-    
-    # إنشاء ملف جديد على Pixeldrain
     for attempt in range(max_retries):
         try:
-            logger.info(f"إنشاء ملف على Pixeldrain (المحاولة {attempt+1})")
-            response = requests.post(
-                'https://pixeldrain.com/api/file',
-                json={"name": filename, "size": file_size},
-                headers={"Authorization": "Basic " + ("YOUR_API_KEY" if os.getenv("PIXELDRAIN_API_KEY") else "")}
-            )
+            logger.info(f"محاولة الرفع إلى Pixeldrain (المحاولة {attempt+1})")
+            
+            # إعداد رؤوس الطلب
+            headers = {}
+            api_key = os.getenv("PIXELDRAIN_API_KEY")
+            if api_key:
+                headers["Authorization"] = f"Basic {api_key}"
+            
+            # إعداد ملف للرفع
+            with open(file_path, 'rb') as f:
+                files = {'file': (filename, f)} if filename else {'file': f}
+                
+                # إرسال الطلب الصحيح باستخدام multipart/form-data
+                response = requests.post(
+                    'https://pixeldrain.com/api/file',
+                    files=files,
+                    headers=headers,
+                    timeout=300  # 5 دقائق مهلة
+                )
+            
             response.raise_for_status()
             file_id = response.json().get('id')
             if file_id:
-                break
+                return f"https://pixeldrain.com/api/file/{file_id}"
+            else:
+                raise Exception("فشل في الحصول على ID الملف")
         except Exception as e:
-            logger.error(f"فشل إنشاء الملف: {str(e)}")
+            logger.error(f"فشل الرفع إلى Pixeldrain: {str(e)}")
             if attempt == max_retries - 1:
-                raise Exception(f"فشل إنشاء الملف بعد {max_retries} محاولات")
-            time.sleep(5)
-    
-    if not file_id:
-        raise Exception("لم يتم الحصول على معرف الملف")
-    
-    # رفع الأجزاء
-    for chunk_index in range(total_chunks):
-        start_offset = chunk_index * chunk_size
-        end_offset = min((chunk_index + 1) * chunk_size, file_size)
-        chunk_length = end_offset - start_offset
-        
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"رفع الجزء {chunk_index+1}/{total_chunks} (المحاولة {attempt+1})")
-                with open(file_path, 'rb') as f:
-                    f.seek(start_offset)
-                    chunk_data = f.read(chunk_length)
-                
-                response = requests.patch(
-                    f"https://pixeldrain.com/api/file/{file_id}",
-                    headers={
-                        "Content-Type": "application/octet-stream",
-                        "Content-Range": f"bytes {start_offset}-{end_offset-1}/{file_size}",
-                        "Authorization": "Basic " + ("YOUR_API_KEY" if os.getenv("PIXELDRAIN_API_KEY") else "")
-                    },
-                    data=chunk_data
-                )
-                response.raise_for_status()
-                break
-            except Exception as e:
-                logger.error(f"فشل رفع الجزء: {str(e)}")
-                if attempt == max_retries - 1:
-                    raise Exception(f"فشل رفع الجزء بعد {max_retries} محاولات")
-                time.sleep(5)
-    
-    return f"https://pixeldrain.com/api/file/{file_id}"
+                raise Exception(f"فشل الرفع بعد {max_retries} محاولات: {str(e)}")
+            time.sleep(10)  # انتظر 10 ثواني قبل إعادة المحاولة
 
 def download_file(url, file_path):
     """تحميل الملف مع دعم الاستئناف وإعادة المحاولة"""
@@ -119,7 +93,7 @@ def download_file(url, file_path):
                 'Range': f'bytes={downloaded_size}-'
             }
             
-            with requests.get(url, headers=headers, stream=True, timeout=30) as response:
+            with requests.get(url, headers=headers, stream=True, timeout=60) as response:
                 response.raise_for_status()
                 
                 # الحصول على الحجم الكلي
@@ -161,7 +135,7 @@ def get_file_size(url):
             'Range': 'bytes=0-1'
         }
         
-        response = requests.get(url, headers=headers, stream=True, timeout=10)
+        response = requests.get(url, headers=headers, stream=True, timeout=15)
         response.raise_for_status()
         
         content_range = response.headers.get('Content-Range')
@@ -177,7 +151,7 @@ def get_file_size(url):
         raise Exception(f"فشل الحصول على حجم الملف: {str(e)}")
 
 async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE, url, filename):
-    """معالجة الملفات الكبيرة مع دعم الرفع المجزأ"""
+    """معالجة الملفات الكبيرة (تحميل + رفع إلى Pixeldrain)"""
     chat_id = update.message.chat_id
     message = await context.bot.send_message(
         chat_id=chat_id,
@@ -255,11 +229,12 @@ async def process_small_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             max_retries = 3
             for attempt in range(max_retries):
                 try:
-                    await context.bot.send_document(
-                        chat_id=chat_id,
-                        document=InputFile(open(file_path, 'rb'), filename=filename),
-                        caption=f"📦 حجم الملف: {file_size_mb:.1f} ميجابايت\n📄 اسم الحلقة: {filename}"
-                    )
+                    with open(file_path, 'rb') as file:
+                        await context.bot.send_document(
+                            chat_id=chat_id,
+                            document=InputFile(file, filename=filename),
+                            caption=f"📦 حجم الملف: {file_size_mb:.1f} ميجابايت\n📄 اسم الحلقة: {filename}"
+                        )
                     break
                 except Exception as e:
                     if attempt == max_retries - 1:
