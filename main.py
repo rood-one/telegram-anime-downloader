@@ -60,7 +60,7 @@ def upload_to_pixeldrain(file_path, filename=None):
                 
                 # إرسال الطلب الصحيح باستخدام multipart/form-data
                 response = requests.post(
-                    'https://pixeldrain.com/api/file',
+                    'https://pixeldrain.com/api/file/',
                     files=files,
                     headers=headers,
                     timeout=300  # 5 دقائق مهلة
