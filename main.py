@@ -8,7 +8,7 @@ import time
 import tempfile
 import logging
 import re
-import base64  # إضافة مكتبة base64 للتشفير
+import base64
 
 # تكوين السجلات
 logging.basicConfig(
@@ -48,11 +48,11 @@ def upload_to_pixeldrain(file_path, filename=None):
             headers = {}
             api_key = os.getenv("PIXELDRAIN_API_KEY")
             if api_key:
-                # تنسيق صحيح للمصادقة: Basic <base64_encoded_api_key>
-                auth_str = f"{api_key}:"  # إضافة النقطتين المطلوبة للتشفير
+                # التنسيق الصحيح: ":" + api_key
+                auth_str = f":{api_key}"
                 b64_auth = base64.b64encode(auth_str.encode()).decode()
                 headers["Authorization"] = f"Basic {b64_auth}"
-                logger.info(f"تم إعداد مصادقة API: {headers['Authorization'][:15]}...")
+                logger.info(f"تم إعداد مصادقة API")
             
             # إعداد ملف للرفع
             with open(file_path, 'rb') as f:
@@ -60,7 +60,7 @@ def upload_to_pixeldrain(file_path, filename=None):
                 
                 # إرسال الطلب الصحيح باستخدام multipart/form-data
                 response = requests.post(
-                    'https://pixeldrain.com/api/file/',
+                    'https://pixeldrain.com/api/file',
                     files=files,
                     headers=headers,
                     timeout=300  # 5 دقائق مهلة
@@ -68,7 +68,6 @@ def upload_to_pixeldrain(file_path, filename=None):
             
             # تسجيل تفاصيل الاستجابة لفحص الأخطاء
             logger.info(f"حالة الاستجابة: {response.status_code}")
-            logger.info(f"محتوى الاستجابة: {response.text}")
             
             response.raise_for_status()
             json_response = response.json()
