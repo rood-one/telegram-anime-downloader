@@ -5,12 +5,10 @@ from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTyp
 from flask import Flask
 import threading
 import time
-import uuid
 import tempfile
 import logging
-import hashlib
 import re
-import math
+import base64  # إضافة مكتبة base64 للتشفير
 
 # تكوين السجلات
 logging.basicConfig(
@@ -50,7 +48,11 @@ def upload_to_pixeldrain(file_path, filename=None):
             headers = {}
             api_key = os.getenv("PIXELDRAIN_API_KEY")
             if api_key:
-                headers["Authorization"] = f"Basic {api_key}"
+                # تنسيق صحيح للمصادقة: Basic <base64_encoded_api_key>
+                auth_str = f"{api_key}:"  # إضافة النقطتين المطلوبة للتشفير
+                b64_auth = base64.b64encode(auth_str.encode()).decode()
+                headers["Authorization"] = f"Basic {b64_auth}"
+                logger.info(f"تم إعداد مصادقة API: {headers['Authorization'][:15]}...")
             
             # إعداد ملف للرفع
             with open(file_path, 'rb') as f:
@@ -64,12 +66,23 @@ def upload_to_pixeldrain(file_path, filename=None):
                     timeout=300  # 5 دقائق مهلة
                 )
             
+            # تسجيل تفاصيل الاستجابة لفحص الأخطاء
+            logger.info(f"حالة الاستجابة: {response.status_code}")
+            logger.info(f"محتوى الاستجابة: {response.text}")
+            
             response.raise_for_status()
-            file_id = response.json().get('id')
-            if file_id:
-                return f"https://pixeldrain.com/api/file/{file_id}"
+            json_response = response.json()
+            
+            if json_response.get('success', False):
+                file_id = json_response.get('id')
+                if file_id:
+                    return f"https://pixeldrain.com/api/file/{file_id}"
+                else:
+                    raise Exception("فشل في الحصول على ID الملف من الاستجابة")
             else:
-                raise Exception("فشل في الحصول على ID الملف")
+                error_msg = json_response.get('value', 'Unknown error')
+                raise Exception(f"فشل الرفع: {error_msg}")
+                
         except Exception as e:
             logger.error(f"فشل الرفع إلى Pixeldrain: {str(e)}")
             if attempt == max_retries - 1:
