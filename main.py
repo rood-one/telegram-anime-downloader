@@ -20,8 +20,8 @@ logger = logging.getLogger(name)
 
 الحصول على متغيرات البيئة
 
-TOKEN = os.getenv("TOKEN")
-MAX_DIRECT_SIZE = 47  # الحد الأقصى لإرسال الملفات مباشرة عبر التلجرام (MB)
+TOKEN = os.getenv("BOT_TOKEN")
+MAX_DIRECT_SIZE = 45  # الحد الأقصى لإرسال الملفات مباشرة عبر التلجرام (MB)
 
 تطبيق Flask لإبقاء الخادم نشطًا
 
