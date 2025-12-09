@@ -15,22 +15,20 @@ from telegram.ext import (
 # ==========================================
 # إعدادات البوت والبيئة
 # ==========================================
-# يفضل وضع التوكن في Environment Variables في Render
-# لكن يمكنك تركه هنا إذا أردت
 TOKEN = os.getenv("TOKEN", "YOUR_TELEGRAM_BOT_TOKEN_HERE")
 
 ASK_TITLE = 1
 DOWNLOAD_CHUNK = 1024 * 1024   # 1MB
-TELEGRAM_LIMIT = 48 * 1024 * 1024  # 48MB (حد آمن)
+TELEGRAM_LIMIT = 48 * 1024 * 1024  # 48MB حد أمان للتيليجرام
 
 # ==========================================
-# 1. السيرفر الوهمي (لحل مشكلة Render)
+# 1. السيرفر الوهمي (لحل مشكلة Render Port)
 # ==========================================
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is running!")
+        self.wfile.write(b"Bot is running 100%!")
 
 def start_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -42,8 +40,9 @@ def start_web_server():
 # 2. وظائف التحميل والرفع
 # ==========================================
 def stream_download(url, out_path):
-    # إضافة headers لتجنب حظر بعض المواقع
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
     with requests.get(url, stream=True, timeout=30, headers=headers) as r:
         r.raise_for_status()
         with open(out_path, "wb") as f:
@@ -52,41 +51,46 @@ def stream_download(url, out_path):
                     f.write(chunk)
     return os.path.getsize(out_path)
 
-def upload_to_gofile(file_path):
-    # جلب أفضل سيرفر متاح حالياً
-    api_url = "https://api.gofile.io/getServer"
-    server_data = requests.get(api_url).json()
+def upload_to_fileio(file_path):
+    """
+    استخدام file.io كبديل لـ GoFile لأنه أكثر استقراراً مع السيرفرات
+    يسمح حتى 2GB للملف الواحد
+    """
+    url = "https://file.io"
+    # expires=1w تعني أن الرابط صالح لمدة أسبوع (أو حتى يتم تحميله مرة واحدة)
+    # ملاحظة: الخطة المجانية لـ file.io تحذف الملف تلقائياً بعد أول تحميل (auto-delete)
     
-    if server_data["status"] != "ok":
-        raise Exception("فشل الاتصال بخوادم GoFile")
-        
-    server = server_data["data"]["server"]
-    upload_url = f"https://{server}.gofile.io/uploadFile"
-
     with open(file_path, "rb") as f:
-        # ملاحظة: GoFile أحياناً يتطلب توكن للحسابات، لكن الضيف يعمل غالباً
         files = {"file": f}
-        r = requests.post(upload_url, files=files)
+        # يمكنك إضافة expires لجعل الرابط يدوم لفترة أطول إذا كان الحساب مدفوعاً،
+        # لكن المجاني غالباً يحذف بعد التحميل
+        r = requests.post(url, files=files)
+
+    if r.status_code != 200:
+        # طباعة الخطأ الفعلي إذا فشل الرفع
+        try:
+            error_msg = r.json()
+        except:
+            error_msg = r.text
+        raise Exception(f"خطأ من المصدر: {error_msg}")
 
     data = r.json()
-    if data["status"] != "ok":
-        raise Exception("GoFile upload failed")
+    if not data.get("success"):
+        raise Exception("فشلت عملية الرفع لسبب غير معروف")
 
-    return data["data"]["downloadPage"]
+    return data["link"]
 
 # ==========================================
 # 3. مراحل المحادثة (Handlers)
 # ==========================================
 async def receive_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text.strip()
-    
-    # تحقق بسيط أن الرابط يبدأ بـ http
     if not url.startswith("http"):
-        await update.message.reply_text("❌ يرجى إرسال رابط صحيح.")
+        await update.message.reply_text("❌ رابط غير صحيح.")
         return ConversationHandler.END
 
     context.user_data["url"] = url
-    await update.message.reply_text("📄 أرسل اسم الحلقة (أو الملف) الآن:")
+    await update.message.reply_text("📄 أرسل اسم الحلقة/الملف:")
     return ASK_TITLE
 
 async def receive_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -94,29 +98,25 @@ async def receive_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = context.user_data.get("url")
     user_id = update.effective_user.id
 
-    # تنظيف الاسم ليكون آمناً كاسم ملف
+    # تنظيف الاسم
     safe_title = "".join(c for c in title if c.isalnum() or c in " -_()[]")
-    if not safe_title:
-        safe_title = "video"
-        
-    # إضافة ID المستخدم لمنع تداخل الملفات
+    if not safe_title: safe_title = "video"
+    
+    # اسم الملف المؤقت
     filename = f"{user_id}_{safe_title}.mp4"
 
-    await update.message.reply_text("⏳ جاري التحميل إلى السيرفر...")
+    await update.message.reply_text("⏳ جاري التحميل إلى السيرفر (Render)...")
 
     try:
-        # عملية التحميل (Blocking)
-        # ملاحظة: في البوتات الكبيرة يفضل تشغيل هذا في thread منفصل، لكن هنا مقبول
         size = stream_download(url, filename)
     except Exception as e:
-        await update.message.reply_text(f"❌ فشل التحميل من الرابط:\n{e}")
-        if os.path.exists(filename):
-            os.remove(filename)
+        await update.message.reply_text(f"❌ فشل التحميل من المصدر:\n{e}")
+        if os.path.exists(filename): os.remove(filename)
         return ConversationHandler.END
 
-    # السيناريو 1: الملف صغير (إرسال مباشر)
+    # الحالة 1: ملف صغير (أقل من 48 ميجا) -> إرسال مباشر
     if size < TELEGRAM_LIMIT:
-        await update.message.reply_text("📤 الملف مناسب، جاري الرفع لتيليجرام...")
+        await update.message.reply_text("📤 الحجم مناسب، جاري الرفع لتليجرام...")
         try:
             with open(filename, "rb") as f:
                 await context.bot.send_document(
@@ -124,47 +124,50 @@ async def receive_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     document=f,
                     filename=f"{safe_title}.mp4",
                     caption=f"🎬 {title}",
-                    read_timeout=60, 
-                    write_timeout=60, 
-                    connect_timeout=60
+                    read_timeout=120,
+                    write_timeout=120,
+                    connect_timeout=120
                 )
         except Exception as e:
-            await update.message.reply_text(f"❌ خطأ أثناء الإرسال لتيليجرام:\n{e}")
+            await update.message.reply_text(f"❌ خطأ تيليجرام:\n{e}")
     
-    # السيناريو 2: الملف كبير (GoFile)
+    # الحالة 2: ملف كبير -> رفع خارجي
     else:
-        await update.message.reply_text(f"⚠️ حجم الملف ({size//(1024*1024)}MB) أكبر من حد البوت.\n🚀 جاري الرفع إلى GoFile...")
+        file_size_mb = size // (1024 * 1024)
+        await update.message.reply_text(f"⚠️ حجم الملف ({file_size_mb}MB) كبير.\n🚀 جاري الرفع إلى سحابة خارجية (File.io)...")
+        
         try:
-            link = upload_to_gofile(filename)
+            link = upload_to_fileio(filename)
             await update.message.reply_text(
-                f"✅ تم الرفع بنجاح!\n🎬 **{title}**\n🔗 رابط التحميل:\n{link}",
+                f"✅ **تم الرفع بنجاح!**\n\n🎬 {title}\n📦 الحجم: {file_size_mb}MB\n🔗 **رابط التحميل:**\n{link}\n\n⚠️ *ملاحظة: الرابط قد يعمل لمرة واحدة فقط.*",
                 parse_mode="Markdown"
             )
         except Exception as e:
-            await update.message.reply_text(f"❌ فشل الرفع إلى GoFile:\n{e}")
+            # هنا سنرى رسالة الخطأ الحقيقية بدلاً من json decode error
+            await update.message.reply_text(f"❌ فشل الرفع الخارجي:\n{e}")
 
-    # تنظيف الملف من السيرفر
+    # حذف الملف من سيرفر Render لتوفير المساحة
     if os.path.exists(filename):
         os.remove(filename)
         
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⛔ تم إلغاء العملية.")
+    await update.message.reply_text("⛔ تم الإلغاء.")
     return ConversationHandler.END
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 أهلاً بك!\nأرسل رابط فيديو مباشر (MP4/MKV) للبدء.")
+    await update.message.reply_text("👋 أرسل رابط الفيديو المباشر للبدء.")
 
 # ==========================================
-# تشغيل التطبيق
+# التشغيل الرئيسي
 # ==========================================
 def main():
-    if TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
-        print("Error: Please set your bot token.")
+    if "YOUR_TELEGRAM_BOT_TOKEN" in TOKEN:
+        print("❌ Error: TOKEN not set.")
         return
 
-    # تشغيل السيرفر الوهمي في Thread منفصل ليعمل بالتوازي مع البوت
+    # تشغيل السيرفر الوهمي في الخلفية
     threading.Thread(target=start_web_server, daemon=True).start()
 
     app = ApplicationBuilder().token(TOKEN).build()
@@ -180,9 +183,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv_handler)
 
-    print("🤖 Bot is runnning...")
-    
-    # استخدام drop_pending_updates لتجاهل الرسائل القديمة عند إعادة التشغيل
+    print("🤖 Bot started...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
