@@ -17,16 +17,16 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
-logger = logging.getLogger(__name__)  # تصحيح name إلى __name__
+logger = logging.getLogger(__name__)
 
 # --- الحصول على متغيرات البيئة ---
 TOKEN = os.getenv("BOT_TOKEN")
-# تأكد من وضع مفتاح Pixeldrain في متغيرات البيئة باسم PIXELDRAIN_API_KEY
+PIXELDRAIN_API_KEY = os.getenv("PIXELDRAIN_API_KEY")
 
-MAX_DIRECT_SIZE = 45  # الحد الأقصى (MB)
+MAX_DIRECT_SIZE = 45  # الحد الأقصى (MB) للإرسال المباشر عبر تليجرام
 
 # --- تطبيق Flask لإبقاء الخادم نشطًا ---
-app = Flask(__name__)  # تصحيح name إلى __name__
+app = Flask(__name__)
 
 @app.route('/')
 def home():
@@ -42,8 +42,6 @@ def keep_alive():
     flask_thread.start()
 
 # --- دوال المساعدة (Synchronous) ---
-# ستبقى هذه الدوال كما هي ولكن سيتم استدعاؤها بطريقة لا توقف البوت
-
 def upload_to_pixeldrain(file_path, filename=None):
     """رفع الملف إلى Pixeldrain"""
     max_retries = 3
@@ -52,9 +50,8 @@ def upload_to_pixeldrain(file_path, filename=None):
             logger.info(f"محاولة الرفع إلى Pixeldrain (المحاولة {attempt+1})")
             
             headers = {}
-            api_key = os.getenv("PIXELDRAIN_API_KEY")
-            if api_key:
-                auth_str = f":{api_key}"
+            if PIXELDRAIN_API_KEY:
+                auth_str = f":{PIXELDRAIN_API_KEY}"
                 b64_auth = base64.b64encode(auth_str.encode()).decode()
                 headers["Authorization"] = f"Basic {b64_auth}"
             
@@ -67,20 +64,28 @@ def upload_to_pixeldrain(file_path, filename=None):
                     timeout=600  # زيادة المهلة للملفات الكبيرة
                 )
             
-            if response.status_code == 201 or response.status_code == 200:
+            if response.status_code in [200, 201]:
                 json_response = response.json()
                 if json_response.get('success', False):
                     file_id = json_response.get('id')
-                    return f"https://pixeldrain.com/u/{file_id}" # تم تعديل الرابط ليكون رابط مشاهدة/تحميل مباشر
-                
-            logger.error(f"فشل الرفع: {response.text}")
-            response.raise_for_status()
+                    return f"https://pixeldrain.com/u/{file_id}"
+                else:
+                    logger.error(f"فشل الرفع (success=false): {json_response}")
+            else:
+                logger.error(f"فشل الرفع (HTTP {response.status_code}): {response.text}")
             
+            # إذا لم يكن النجاح 200/201، نجرب مرة أخرى
+            if attempt < max_retries - 1:
+                time.sleep(5)
+                
         except Exception as e:
-            logger.error(f"خطأ في الرفع: {str(e)}")
-            if attempt == max_retries - 1:
-                raise e
-            time.sleep(5)
+            logger.error(f"خطأ في الرفع إلى Pixeldrain: {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(5)
+            else:
+                raise Exception(f"فشل الرفع إلى Pixeldrain بعد {max_retries} محاولات: {str(e)}")
+    
+    return None
 
 def download_file(url, file_path):
     """تحميل الملف"""
@@ -95,8 +100,10 @@ def download_file(url, file_path):
         try:
             headers = {
                 'User-Agent': 'Mozilla/5.0',
-                'Range': f'bytes={downloaded_size}-'
             }
+            
+            if downloaded_size > 0:
+                headers['Range'] = f'bytes={downloaded_size}-'
             
             # stream=True مهم جداً لعدم تحميل الملف في الرام
             with requests.get(url, headers=headers, stream=True, timeout=60) as response:
@@ -111,13 +118,14 @@ def download_file(url, file_path):
                             f.write(chunk)
                             downloaded_size += len(chunk)
                 
-                return downloaded_size / (1024 * 1024) # Return size in MB
+                return downloaded_size / (1024 * 1024)  # Return size in MB
                 
         except Exception as e:
             logger.error(f"خطأ في التحميل: {str(e)}")
-            if attempt == max_retries - 1:
-                raise e
-            time.sleep(5)
+            if attempt < max_retries - 1:
+                time.sleep(5)
+            else:
+                raise
 
 def get_file_size(url):
     """الحصول على حجم الملف"""
@@ -125,21 +133,28 @@ def get_file_size(url):
         response = requests.head(url, allow_redirects=True, timeout=10)
         # إذا فشل head نجرب get مع range
         if 'Content-Length' not in response.headers:
-             response = requests.get(url, headers={'Range': 'bytes=0-1'}, stream=True, timeout=10)
+            response = requests.get(url, headers={'Range': 'bytes=0-1'}, stream=True, timeout=10)
         
         size = int(response.headers.get('Content-Length', 0))
-        return size
-    except:
+        return size / (1024 * 1024)  # Return size in MB
+    except Exception as e:
+        logger.error(f"خطأ في الحصول على حجم الملف: {str(e)}")
         return 0
 
 def sanitize_filename(name):
+    """تنظيف اسم الملف"""
     return re.sub(r'[^\w\-_\. ]', '', name).strip()
 
 # --- دوال المعالجة (Async) ---
-
 async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE, url, filename):
+    """معالجة الملف الكبير (رفعه إلى Pixeldrain)"""
     chat_id = update.message.chat_id
-    status_msg = await context.bot.send_message(chat_id, "⏳ بدأت معالجة الملف الكبير...")
+    try:
+        status_msg = await context.bot.send_message(chat_id, "⏳ بدأت معالجة الملف الكبير...")
+    except Exception as e:
+        # إذا فشل إرسال الرسالة، نعيد المحاولة في الرسالة الأصلية
+        await update.message.reply_text("⏳ بدأت معالجة الملف الكبير...")
+        status_msg = None
 
     try:
         # إنشاء مجلد مؤقت
@@ -147,14 +162,21 @@ async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             file_path = os.path.join(temp_dir, filename)
             
             # 1. التحميل (تشغيل في Thread منفصل لمنع تجميد البوت)
-            await context.bot.edit_message_text("📥 جاري التحميل إلى الخادم...", chat_id, status_msg.message_id)
+            if status_msg:
+                await context.bot.edit_message_text("📥 جاري التحميل إلى الخادم...", chat_id, status_msg.message_id)
+            else:
+                await update.message.reply_text("📥 جاري التحميل إلى الخادم...")
+            
             loop = asyncio.get_running_loop()
             
             # استخدام run_in_executor لتشغيل الدالة الثقيلة
             file_size_mb = await loop.run_in_executor(None, download_file, url, file_path)
             
             # 2. الرفع إلى Pixeldrain (أيضاً في Thread منفصل)
-            await context.bot.edit_message_text("☁️ جاري الرفع إلى Pixeldrain...", chat_id, status_msg.message_id)
+            if status_msg:
+                await context.bot.edit_message_text("☁️ جاري الرفع إلى Pixeldrain...", chat_id, status_msg.message_id)
+            else:
+                await update.message.reply_text("☁️ جاري الرفع إلى Pixeldrain...")
             
             download_link = await loop.run_in_executor(None, upload_to_pixeldrain, file_path, filename)
             
@@ -162,49 +184,74 @@ async def process_large_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 raise Exception("فشل الحصول على رابط من Pixeldrain")
 
             # 3. إرسال النتيجة
-            await context.bot.edit_message_text(
+            message_text = (
                 f"✅ **تمت العملية بنجاح!**\n\n"
                 f"📄 الاسم: `{filename}`\n"
                 f"📦 الحجم: `{file_size_mb:.2f} MB`\n"
-                f"🔗 الرابط: {download_link}",
-                chat_id,
-                status_msg.message_id,
-                parse_mode='Markdown'
+                f"🔗 الرابط: {download_link}\n"
+                f"\n📌 *ملاحظة:* تم الرفع إلى Pixeldrain لأن الملف أكبر من {MAX_DIRECT_SIZE}MB"
             )
+            
+            if status_msg:
+                await context.bot.edit_message_text(
+                    message_text,
+                    chat_id,
+                    status_msg.message_id,
+                    parse_mode='Markdown'
+                )
+            else:
+                await update.message.reply_text(message_text, parse_mode='Markdown')
 
     except Exception as e:
-        logger.error(f"Error: {e}")
-        await context.bot.edit_message_text(f"❌ حدث خطأ: {str(e)}", chat_id, status_msg.message_id)
+        logger.error(f"Error processing large file: {e}")
+        error_msg = f"❌ حدث خطأ أثناء معالجة الملف الكبير: {str(e)}"
+        if status_msg:
+            await context.bot.edit_message_text(error_msg, chat_id, status_msg.message_id)
+        else:
+            await update.message.reply_text(error_msg)
 
 async def process_small_file(update: Update, context: ContextTypes.DEFAULT_TYPE, url, filename):
+    """معالجة الملف الصغير (إرساله مباشرة عبر تليجرام)"""
     chat_id = update.message.chat_id
-    status_msg = await context.bot.send_message(chat_id, "⏬ جاري المعالجة والإرسال المباشر...")
+    try:
+        status_msg = await context.bot.send_message(chat_id, "⏬ جاري المعالجة والإرسال المباشر...")
+    except Exception as e:
+        status_msg = None
 
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             file_path = os.path.join(temp_dir, filename)
             
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, download_file, url, file_path)
             
-            await context.bot.edit_message_text("📤 جاري الرفع إلى تيليجرام...", chat_id, status_msg.message_id)
+            if status_msg:
+                await context.bot.edit_message_text("📥 جاري التحميل...", chat_id, status_msg.message_id)
+            
+            file_size_mb = await loop.run_in_executor(None, download_file, url, file_path)
+            
+            if status_msg:
+                await context.bot.edit_message_text("📤 جاري الرفع إلى تيليجرام...", chat_id, status_msg.message_id)
             
             with open(file_path, 'rb') as f:
                 await context.bot.send_document(
                     chat_id=chat_id,
                     document=f,
                     filename=filename,
-                    caption=f"📄 {filename}"
+                    caption=f"📄 {filename}\n📦 الحجم: {file_size_mb:.2f} MB"
                 )
             
-            await context.bot.delete_message(chat_id, status_msg.message_id)
+            if status_msg:
+                await context.bot.delete_message(chat_id, status_msg.message_id)
 
     except Exception as e:
-        logger.error(f"Error small file: {e}")
-        await context.bot.edit_message_text(f"❌ خطأ: {str(e)}", chat_id, status_msg.message_id)
+        logger.error(f"Error processing small file: {e}")
+        error_msg = f"❌ حدث خطأ أثناء معالجة الملف الصغير: {str(e)}"
+        if status_msg:
+            await context.bot.edit_message_text(error_msg, chat_id, status_msg.message_id)
+        else:
+            await update.message.reply_text(error_msg)
 
 # --- معالجات التلجرام ---
-
 async def request_episode_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """الخطوة 1: استلام الرابط وطلب الاسم"""
     url = update.message.text.strip()
@@ -218,41 +265,118 @@ async def handle_episode_name(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     episode_name = update.message.text.strip()
+    if not episode_name:
+        await update.message.reply_text("⚠️ يرجى إرسال اسم صحيح للحلقة.")
+        return
+
     filename = sanitize_filename(episode_name)
-    if not filename.endswith(('.mkv', '.mp4')):
-        filename += ".mp4" # افتراض mp4 اذا لم يحدد
+    if not filename:
+        filename = "video"  # اسم افتراضي
+    
+    # إضافة امتداد إذا لم يكن موجوداً
+    if not filename.endswith(('.mkv', '.mp4', '.avi', '.mov', '.webm')):
+        filename += ".mp4"
 
     url = context.user_data['url']
-    del context.user_data['url'] # تنظيف الذاكرة
+    del context.user_data['url']  # تنظيف الذاكرة
 
     try:
-        # فحص الحجم سريعاً (blocking call but fast)
-        file_size_bytes = await asyncio.get_running_loop().run_in_executor(None, get_file_size, url)
-        size_mb = file_size_bytes / (1024 * 1024)
-
-        msg = await update.message.reply_text(
-            f"🔍 تم اكتشاف الملف.\n📦 الحجم التقديري: {size_mb:.2f} MB\n⏳ جاري بدء التحميل..."
+        # فحص الحجم
+        msg = await update.message.reply_text("🔍 جاري فحص حجم الملف...")
+        
+        loop = asyncio.get_running_loop()
+        size_mb = await loop.run_in_executor(None, get_file_size, url)
+        
+        await context.bot.edit_message_text(
+            f"🔍 تم اكتشاف الملف.\n📦 الحجم التقديري: {size_mb:.2f} MB",
+            chat_id=update.message.chat_id,
+            message_id=msg.message_id
         )
 
+        # اتخاذ القرار بناءً على الحجم
         if size_mb > MAX_DIRECT_SIZE or size_mb == 0:
-            # إذا كان الحجم 0 (غير معروف) نعامله كملف كبير للأمان
+            # إذا كان الحجم أكبر من الحد أو غير معروف، نرفع إلى Pixeldrain
+            await context.bot.edit_message_text(
+                f"📦 الحجم: {size_mb:.2f} MB (أكبر من {MAX_DIRECT_SIZE}MB)\n⏳ جاري الرفع إلى Pixeldrain...",
+                chat_id=update.message.chat_id,
+                message_id=msg.message_id
+            )
             await process_large_file(update, context, url, filename)
         else:
+            # إذا كان الحجم صغيراً، نرسله مباشرة
+            await context.bot.edit_message_text(
+                f"📦 الحجم: {size_mb:.2f} MB (أقل من {MAX_DIRECT_SIZE}MB)\n⏳ جاري الإرسال المباشر...",
+                chat_id=update.message.chat_id,
+                message_id=msg.message_id
+            )
             await process_small_file(update, context, url, filename)
             
     except Exception as e:
-        await update.message.reply_text(f"❌ خطأ في التهيئة: {e}")
+        logger.error(f"Error in handle_episode_name: {e}")
+        error_msg = f"❌ خطأ في المعالجة: {str(e)}"
+        try:
+            await context.bot.edit_message_text(
+                error_msg,
+                chat_id=update.message.chat_id,
+                message_id=msg.message_id
+            )
+        except:
+            await update.message.reply_text(error_msg)
+
+# --- معالجة الأمر /start ---
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة أمر /start"""
+    welcome_text = (
+        "👋 مرحبًا! أنا بوت لتحويل روابط الفيديو إلى ملفات في تليجرام.\n\n"
+        "📌 **كيفية الاستخدام:**\n"
+        "1. أرسل رابط الفيديو\n"
+        "2. أرسل اسم الحلقة\n"
+        "3. انتظر حتى يكتمل التحويل\n\n"
+        "📦 **ملاحظة:**\n"
+        f"- الملفات الأصغر من {MAX_DIRECT_SIZE}MB تُرسل مباشرة\n"
+        f"- الملفات الأكبر من {MAX_DIRECT_SIZE}MB تُرفع إلى Pixeldrain\n\n"
+        "🚀 ابدأ الآن بإرسال رابط الفيديو!"
+    )
+    await update.message.reply_text(welcome_text, parse_mode='Markdown')
+
+# --- معالجة الأمر /help ---
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة أمر /help"""
+    help_text = (
+        "📖 **مساعدة في استخدام البوت:**\n\n"
+        "1. أرسل رابط الفيديو (يجب أن يكون رابطًا مباشرًا)\n"
+        "2. أرسل اسم الحلقة (مثال: Naruto Episode 1)\n"
+        "3. انتظر حتى يكتمل التحميل والتحويل\n\n"
+        "📌 **ملاحظات مهمة:**\n"
+        f"- الحد الأقصى للإرسال المباشر: {MAX_DIRECT_SIZE}MB\n"
+        "- الملفات الكبيرة تُرفع تلقائيًا إلى Pixeldrain\n"
+        "- تأكد من أن الرابط مباشر وصالح للتحميل\n\n"
+        "❓ **مشاكل شائعة:**\n"
+        "- إذا لم يعمل الرابط، تأكد أنه رابط مباشر للتحميل\n"
+        "- يمكن للبوت التعامل مع معظم صيغ الفيديو (mp4, mkv, etc.)\n"
+        "- الإستجابة قد تستغرق وقتًا للملفات الكبيرة"
+    )
+    await update.message.reply_text(help_text, parse_mode='Markdown')
 
 def main():
+    # تشغيل خادم Flask لإبقاء البوت نشطًا
     keep_alive()
     
     if not TOKEN:
+        logger.error("Error: BOT_TOKEN is not set!")
         print("Error: BOT_TOKEN is not set!")
         return
-
-    logger.info("Bot started...")
+    
+    logger.info("Starting bot...")
+    
+    # بناء التطبيق
     app_bot = ApplicationBuilder().token(TOKEN).build()
 
+    # إضافة معالجات الأوامر
+    from telegram.ext import CommandHandler
+    app_bot.add_handler(CommandHandler("start", start_command))
+    app_bot.add_handler(CommandHandler("help", help_command))
+    
     # معالج الروابط (Regex)
     app_bot.add_handler(MessageHandler(
         filters.Regex(r'^https?://') & ~filters.COMMAND, 
@@ -265,7 +389,9 @@ def main():
         handle_episode_name
     ))
 
-    app_bot.run_polling()
+    # بدء البوت
+    logger.info("Bot is running...")
+    app_bot.run_polling(allowed_updates=Update.ALL_TYPES)
 
-if __name__ == '__main__':  # تصحيح الاسم هنا
+if __name__ == '__main__':
     main()
