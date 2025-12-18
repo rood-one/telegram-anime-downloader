@@ -57,7 +57,7 @@ def upload_to_gofile(file_path, filename=None):
             server_data = server_response.json()
             
             if server_data.get(\'status\') == \'ok\':
-                server = server_data[\'data\'][\'servers\'][0][\'name\]
+                server = server_data['data']['servers'][0]['name']
                 upload_url = f\'https://{server}.gofile.io/contents/uploadfile\'
             else:
                 # استخدام خادم احتياطي في حالة فشل الحصول على قائمة الخوادم
@@ -77,7 +77,7 @@ def upload_to_gofile(file_path, filename=None):
             json_response = response.json()
             
             if json_response.get(\'status\') == \'ok\':
-                download_page = json_response[\'data\'][\'downloadPage\]
+                download_page = json_response['data']['downloadPage']
                 return download_page
             else:
                 logger.error(f"فشل الرفع (Gofile API Error): {json_response}")
@@ -148,7 +148,7 @@ async def process_direct_send(update: Update, context: ContextTypes.DEFAULT_TYPE
             file_size_mb = await loop.run_in_executor(None, download_file, url, file_path)
             
             if file_size_mb > MAX_DIRECT_SIZE:
-                error_text = (
+        error_text = (
                     f"❌ **خطأ:** الملف كبير جداً ({file_size_mb:.2f} MB) للإرسال المباشر.\n"
                     f"⚠️ الحد الأقصى هو {MAX_DIRECT_SIZE} MB. يرجى استخدام خيار Gofile.io."
                 )
@@ -195,12 +195,12 @@ async def process_gofile_upload(update: Update, context: ContextTypes.DEFAULT_TY
             if not download_link:
                 raise Exception("فشل الحصول على رابط من Gofile.io")
 
-            message_text = (
-                f"✅ **تم الرفع بنجاح!**\n\n"
-                f"📄 الاسم: `{filename}`\n"
-                f"📦 الحجم: `{file_size_mb:.2f} MB`\n"
-                f"🔗 **رابط التحميل:**\n{download_link}"
-            )
+                message_text = (
+                    f"✅ **تم الرفع بنجاح!**\n\n"
+                    f"📄 الاسم: `{filename}`\n"
+                    f"📦 الحجم: `{file_size_mb:.2f} MB`\n"
+                    f"🔗 **رابط التحميل:**\n{download_link}"
+                )
             await query.edit_message_text(message_text, parse_mode=\'Markdown\', disable_web_page_preview=True)
 
         except Exception as e:
@@ -210,15 +210,15 @@ async def process_gofile_upload(update: Update, context: ContextTypes.DEFAULT_TY
 # --- معالجات التلجرام ---
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome_text = (
-        "👋 **أهلاً بك!**\n\n"
-        "أرسل رابط فيديو مباشر، ثم أرسل اسمه، وسأقوم بمعالجته لك."
-    )
+        welcome_text = (
+            f"👋 **أهلاً بك!**\n\n"
+            f"أرسل رابط فيديو مباشر، ثم أرسل اسمه، وسأقوم بمعالجته لك."
+        )
     await update.message.reply_text(welcome_text, parse_mode=\'Markdown\')
 
 async def request_episode_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear() # بدء جلسة جديدة
-    context.user_data[\'url\] = update.message.text.strip()
+    context.user_data['url'] = update.message.text.strip()
     await update.message.reply_text("📝 الآن أرسل اسم الملف (مثال: One Piece 1000)")
 
 async def handle_episode_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -230,7 +230,7 @@ async def handle_episode_name(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not filename.endswith(('.mkv', '.mp4', '.avi', '.mov')):
         filename += ".mp4"
 
-    context.user_data[\'filename\] = filename
+    context.user_data['filename'] = filename
 
     keyboard = [
         [InlineKeyboardButton("📤 إرسال مباشر", callback_data="direct")],
@@ -249,8 +249,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    url = context.user_data.get(\'url\')
-    filename = context.user_data.get(\'filename\')
+    url = context.user_data.get('url')
+    filename = context.user_data.get('filename')
     
     if not url or not filename:
         await query.edit_message_text("⚠️ انتهت الجلسة، يرجى إرسال الرابط مرة أخرى.")
