@@ -10,6 +10,7 @@ import logging
 import re
 import base64
 import asyncio
+import json
 
 # --- تكوين السجلات ---
 logging.basicConfig(
@@ -20,7 +21,6 @@ logger = logging.getLogger(__name__)
 
 # --- الحصول على متغيرات البيئة ---
 TOKEN = os.getenv("BOT_TOKEN")
-PIXELDRAIN_API_KEY = os.getenv("PIXELDRAIN_API_KEY")
 
 MAX_DIRECT_SIZE = 45  # الحد الأقصى (MB) للإرسال المباشر عبر تليجرام
 
@@ -41,49 +41,145 @@ def keep_alive():
     flask_thread.start()
 
 # --- دوال المساعدة (Synchronous) ---
-def upload_to_pixeldrain(file_path, filename=None):
-    """رفع الملف إلى Pixeldrain"""
+def upload_to_fileio(file_path, filename=None):
+    """رفع الملف إلى file.io (بديل لـ Pixeldrain)"""
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            logger.info(f"محاولة الرفع إلى Pixeldrain (المحاولة {attempt+1})")
+            logger.info(f"محاولة الرفع إلى file.io (المحاولة {attempt+1})")
             
-            headers = {}
-            if PIXELDRAIN_API_KEY:
-                auth_str = f":{PIXELDRAIN_API_KEY}"
-                b64_auth = base64.b64encode(auth_str.encode()).decode()
-                headers["Authorization"] = f"Basic {b64_auth}"
+            if filename is None:
+                filename = os.path.basename(file_path)
             
             with open(file_path, 'rb') as f:
-                files = {'file': (filename, f)} if filename else {'file': f}
+                files = {'file': (filename, f)}
                 response = requests.post(
-                    'https://pixeldrain.com/api/file',
+                    'https://file.io',
                     files=files,
-                    headers=headers,
-                    timeout=600  # زيادة المهلة للملفات الكبيرة
+                    timeout=300
                 )
             
-            if response.status_code in [200, 201]:
+            if response.status_code == 200:
                 json_response = response.json()
                 if json_response.get('success', False):
-                    file_id = json_response.get('id')
-                    return f"https://pixeldrain.com/u/{file_id}"
+                    download_link = json_response.get('link')
+                    return download_link
                 else:
-                    logger.error(f"فشل الرفع (success=false): {json_response}")
+                    logger.error(f"فشل الرفع إلى file.io: {json_response}")
             else:
                 logger.error(f"فشل الرفع (HTTP {response.status_code}): {response.text}")
             
             if attempt < max_retries - 1:
-                time.sleep(5)
+                time.sleep(3)
                 
         except Exception as e:
-            logger.error(f"خطأ في الرفع إلى Pixeldrain: {str(e)}")
+            logger.error(f"خطأ في الرفع إلى file.io: {str(e)}")
             if attempt < max_retries - 1:
-                time.sleep(5)
+                time.sleep(3)
             else:
-                raise Exception(f"فشل الرفع إلى Pixeldrain بعد {max_retries} محاولات: {str(e)}")
+                # جرب خدمة بديلة إذا فشل file.io
+                try:
+                    return upload_to_anonfiles(file_path, filename)
+                except Exception as e2:
+                    raise Exception(f"فشل الرفع بعد {max_retries} محاولات: {str(e)} | البديل: {str(e2)}")
     
     return None
+
+def upload_to_anonfiles(file_path, filename=None):
+    """رفع الملف إلى anonfiles.com (خدمة بديلة)"""
+    try:
+        logger.info("محاولة الرفع إلى anonfiles.com")
+        
+        if filename is None:
+            filename = os.path.basename(file_path)
+        
+        with open(file_path, 'rb') as f:
+            files = {'file': (filename, f)}
+            response = requests.post(
+                'https://api.anonfiles.com/upload',
+                files=files,
+                timeout=300
+            )
+        
+        if response.status_code == 200:
+            json_response = response.json()
+            if json_response.get('status', False):
+                download_link = json_response['data']['file']['url']['full']
+                return download_link
+        
+        logger.error(f"فشل الرفع إلى anonfiles: {response.text}")
+        raise Exception("فشل الرفع إلى anonfiles")
+        
+    except Exception as e:
+        logger.error(f"خطأ في الرفع إلى anonfiles: {str(e)}")
+        raise
+
+def upload_to_transfersh(file_path, filename=None):
+    """رفع الملف إلى transfer.sh (خدمة أخرى)"""
+    try:
+        logger.info("محاولة الرفع إلى transfer.sh")
+        
+        if filename is None:
+            filename = os.path.basename(file_path)
+        
+        with open(file_path, 'rb') as f:
+            response = requests.put(
+                f'https://transfer.sh/{filename}',
+                data=f,
+                headers={'Max-Days': '7'},
+                timeout=300
+            )
+        
+        if response.status_code == 200:
+            download_link = response.text.strip()
+            return download_link
+        
+        logger.error(f"فشل الرفع إلى transfer.sh: {response.text}")
+        raise Exception("فشل الرفع إلى transfer.sh")
+        
+    except Exception as e:
+        logger.error(f"خطأ في الرفع إلى transfer.sh: {str(e)}")
+        raise
+
+def upload_to_gofile(file_path, filename=None):
+    """رفع الملف إلى gofile.io"""
+    try:
+        logger.info("محاولة الرفع إلى gofile.io")
+        
+        # الحصول على خادم متاح
+        server_response = requests.get('https://api.gofile.io/getServer', timeout=30)
+        if server_response.status_code != 200:
+            raise Exception("فشل في الحصول على خادم gofile")
+        
+        server_data = server_response.json()
+        if not server_data.get('status') == 'ok':
+            raise Exception("فشل في الحصول على خادم gofile")
+        
+        server = server_data['data']['server']
+        
+        if filename is None:
+            filename = os.path.basename(file_path)
+        
+        with open(file_path, 'rb') as f:
+            files = {'file': (filename, f)}
+            response = requests.post(
+                f'https://{server}.gofile.io/uploadFile',
+                files=files,
+                timeout=300
+            )
+        
+        if response.status_code == 200:
+            json_response = response.json()
+            if json_response.get('status') == 'ok':
+                download_link = f"https://gofile.io/d/{json_response['data']['code']}"
+                return download_link
+        
+        logger.error(f"فشل الرفع إلى gofile: {response.text}")
+        raise Exception("فشل الرفع إلى gofile")
+        
+    except Exception as e:
+        logger.error(f"خطأ في الرفع إلى gofile: {str(e)}")
+        raise
 
 def download_file(url, file_path):
     """تحميل الملف"""
@@ -97,13 +193,12 @@ def download_file(url, file_path):
     for attempt in range(max_retries):
         try:
             headers = {
-                'User-Agent': 'Mozilla/5.0',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
             
             if downloaded_size > 0:
                 headers['Range'] = f'bytes={downloaded_size}-'
             
-            # stream=True مهم جداً لعدم تحميل الملف في الرام
             with requests.get(url, headers=headers, stream=True, timeout=60) as response:
                 response.raise_for_status()
                 
@@ -129,6 +224,29 @@ def sanitize_filename(name):
     """تنظيف اسم الملف"""
     return re.sub(r'[^\w\-_\. ]', '', name).strip()
 
+def upload_file_service(file_path, filename=None, service='fileio'):
+    """رفع الملف باستخدام الخدمة المحددة"""
+    services = {
+        'fileio': upload_to_fileio,
+        'anonfiles': upload_to_anonfiles,
+        'transfersh': upload_to_transfersh,
+        'gofile': upload_to_gofile
+    }
+    
+    if service in services:
+        return services[service](file_path, filename)
+    else:
+        # جرب جميع الخدمات بالترتيب
+        for service_name, upload_func in services.items():
+            try:
+                logger.info(f"جرب خدمة: {service_name}")
+                return upload_func(file_path, filename)
+            except Exception as e:
+                logger.warning(f"فشلت خدمة {service_name}: {str(e)}")
+                continue
+        
+        raise Exception("فشل الرفع في جميع الخدمات المتاحة")
+
 # --- دوال المعالجة (Async) ---
 async def process_direct_send(update: Update, context: ContextTypes.DEFAULT_TYPE, url, filename):
     """معالجة الإرسال المباشر عبر تليجرام"""
@@ -139,7 +257,6 @@ async def process_direct_send(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.answer()
         await query.edit_message_text("📤 تم اختيار الإرسال المباشر عبر تليجرام\n\n⏳ جاري التحميل...")
     except:
-        # إذا فشل تحرير الرسالة، نرسل رسالة جديدة
         message = await context.bot.send_message(chat_id, "📤 تم اختيار الإرسال المباشر عبر تليجرام\n\n⏳ جاري التحميل...")
         query = type('obj', (object,), {'message': message})()
 
@@ -158,7 +275,7 @@ async def process_direct_send(update: Update, context: ContextTypes.DEFAULT_TYPE
                     f"❌ **خطأ:** الملف كبير جداً للإرسال المباشر\n\n"
                     f"📦 الحجم: {file_size_mb:.2f} MB\n"
                     f"📊 الحد الأقصى للإرسال المباشر: {MAX_DIRECT_SIZE} MB\n\n"
-                    f"⚠️ يرجى إعادة المحاولة واختيار رفع الملف إلى Pixeldrain",
+                    f"⚠️ يرجى إعادة المحاولة واختيار رفع الملف إلى خدمة تخزين",
                     parse_mode='Markdown'
                 )
                 return
@@ -183,16 +300,16 @@ async def process_direct_send(update: Update, context: ContextTypes.DEFAULT_TYPE
         except:
             await context.bot.send_message(chat_id, error_msg)
 
-async def process_pixeldrain_upload(update: Update, context: ContextTypes.DEFAULT_TYPE, url, filename):
-    """معالجة رفع الملف إلى Pixeldrain"""
+async def process_cloud_upload(update: Update, context: ContextTypes.DEFAULT_TYPE, url, filename):
+    """معالجة رفع الملف إلى خدمة تخزين سحابية"""
     chat_id = update.effective_chat.id
     query = update.callback_query
     
     try:
         await query.answer()
-        await query.edit_message_text("☁️ تم اختيار رفع الملف إلى Pixeldrain\n\n⏳ جاري التحميل...")
+        await query.edit_message_text("☁️ تم اختيار رفع الملف إلى خدمة تخزين\n\n⏳ جاري التحميل...")
     except:
-        message = await context.bot.send_message(chat_id, "☁️ تم اختيار رفع الملف إلى Pixeldrain\n\n⏳ جاري التحميل...")
+        message = await context.bot.send_message(chat_id, "☁️ تم اختيار رفع الملف إلى خدمة تخزين\n\n⏳ جاري التحميل...")
         query = type('obj', (object,), {'message': message})()
 
     try:
@@ -204,31 +321,72 @@ async def process_pixeldrain_upload(update: Update, context: ContextTypes.DEFAUL
             
             file_size_mb = await loop.run_in_executor(None, download_file, url, file_path)
             
-            await query.edit_message_text("☁️ جاري رفع الملف إلى Pixeldrain...")
+            await query.edit_message_text("☁️ جاري رفع الملف إلى الخدمة السحابية...")
             
-            download_link = await loop.run_in_executor(None, upload_to_pixeldrain, file_path, filename)
+            # محاولة رفع الملف باستخدام أفضل خدمة متاحة
+            try:
+                download_link = await loop.run_in_executor(None, upload_file_service, file_path, filename, 'fileio')
+                service_name = "file.io"
+            except Exception as e:
+                logger.warning(f"فشلت file.io، جرب خدمة أخرى: {str(e)}")
+                try:
+                    download_link = await loop.run_in_executor(None, upload_file_service, file_path, filename, 'gofile')
+                    service_name = "gofile.io"
+                except Exception as e2:
+                    logger.warning(f"فشلت gofile، جرب خدمة أخرى: {str(e2)}")
+                    try:
+                        download_link = await loop.run_in_executor(None, upload_file_service, file_path, filename, 'anonfiles')
+                        service_name = "anonfiles.com"
+                    except Exception as e3:
+                        logger.error(f"فشلت جميع الخدمات: {str(e3)}")
+                        raise Exception("فشل الرفع في جميع الخدمات المتاحة. يرجى المحاولة لاحقاً.")
             
             if not download_link:
-                raise Exception("فشل الحصول على رابط من Pixeldrain")
+                raise Exception("فشل الحصول على رابط تحميل")
 
             # إرسال النتيجة
             message_text = (
                 f"✅ **تم رفع الملف بنجاح!**\n\n"
                 f"📄 الاسم: `{filename}`\n"
                 f"📦 الحجم: `{file_size_mb:.2f} MB`\n"
+                f"🌐 الخدمة: {service_name}\n"
                 f"🔗 رابط التحميل المباشر:\n{download_link}\n\n"
-                f"📌 *ملاحظة:* الرابط صالح لمدة 30 يومًا من آخر تحميل"
+                f"📌 *ملاحظة:*\n"
+                f"• روابط file.io صالحة لمدة 14 يومًا\n"
+                f"• روابط gofile.io صالحة لمدة 10 أيام\n"
+                f"• يمكنك مشاركة الرابط مع الآخرين"
             )
             
-            await query.edit_message_text(message_text, parse_mode='Markdown')
+            # إضافة زر لنسخ الرابط
+            keyboard = [
+                [InlineKeyboardButton("📋 نسخ الرابط", callback_data=f"copy:{download_link}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(message_text, parse_mode='Markdown', reply_markup=reply_markup)
 
     except Exception as e:
-        logger.error(f"Error in Pixeldrain upload: {e}")
-        error_msg = f"❌ حدث خطأ أثناء رفع الملف إلى Pixeldrain: {str(e)}"
+        logger.error(f"Error in cloud upload: {e}")
+        error_msg = f"❌ حدث خطأ أثناء رفع الملف:\n\n{str(e)}\n\n⚠️ يرجى المحاولة مرة أخرى أو استخدام الإرسال المباشر إذا كان الملف صغيراً."
         try:
             await query.edit_message_text(error_msg)
         except:
             await context.bot.send_message(chat_id, error_msg)
+
+async def handle_copy_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة نسخ الرابط"""
+    query = update.callback_query
+    await query.answer()
+    
+    # استخراج الرابط من callback_data
+    link = query.data.split(':', 1)[1]
+    
+    # إرسال رسالة منفصلة تحتوي على الرابط لسهولة النسخ
+    await context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text=f"📋 **الرابط للنسخ:**\n\n`{link}`\n\nيمكنك نسخ الرابط من الأعلى ☝️",
+        parse_mode='Markdown'
+    )
 
 # --- معالجات التلجرام ---
 async def request_episode_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -253,20 +411,19 @@ async def handle_episode_name(update: Update, context: ContextTypes.DEFAULT_TYPE
         filename = "video"
     
     # إضافة امتداد إذا لم يكن موجوداً
-    if not filename.endswith(('.mkv', '.mp4', '.avi', '.mov', '.webm', '.flv', '.wmv')):
+    if not filename.endswith(('.mkv', '.mp4', '.avi', '.mov', '.webm', '.flv', '.wmv', '.m4v')):
         filename += ".mp4"
 
     url = context.user_data['url']
     
     # حفظ البيانات مؤقتاً
     context.user_data['filename'] = filename
-    context.user_data['processing'] = True
 
     # عرض خيارات الإرسال للمستخدم
     keyboard = [
         [
             InlineKeyboardButton("📤 إرسال مباشر عبر تليجرام", callback_data="direct"),
-            InlineKeyboardButton("☁️ رفع إلى Pixeldrain", callback_data="pixeldrain")
+            InlineKeyboardButton("☁️ رفع إلى خدمة تخزين", callback_data="cloud")
         ]
     ]
     
@@ -277,7 +434,7 @@ async def handle_episode_name(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"📊 **الحد الأقصى للإرسال المباشر:** {MAX_DIRECT_SIZE} MB\n\n"
         f"📍 **اختر طريقة الإرسال:**\n"
         f"• 📤 **إرسال مباشر:** أرسل الملف لك مباشرة عبر تليجرام (للملفات الصغيرة)\n"
-        f"• ☁️ **رفع إلى Pixeldrain:** تحصل على رابط تحميل مباشر (للملفات الكبيرة)\n\n"
+        f"• ☁️ **رفع إلى خدمة تخزين:** تحصل على رابط تحميل مباشر (للملفات الكبيرة)\n\n"
         f"⚠️ *ملاحظة:* إذا اخترت الإرسال المباشر وكان الملف أكبر من {MAX_DIRECT_SIZE}MB، سيفشل الإرسال",
         reply_markup=reply_markup,
         parse_mode='Markdown'
@@ -287,6 +444,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """معالجة اختيار المستخدم"""
     query = update.callback_query
     chat_id = update.effective_chat.id
+    
+    # التحقق مما إذا كان هذا طلب نسخ رابط
+    if query.data.startswith('copy:'):
+        await handle_copy_link(update, context)
+        return
     
     # استخراج البيانات من user_data
     url = context.user_data.get('url')
@@ -300,8 +462,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if query.data == "direct":
         await process_direct_send(update, context, url, filename)
-    elif query.data == "pixeldrain":
-        await process_pixeldrain_upload(update, context, url, filename)
+    elif query.data == "cloud":
+        await process_cloud_upload(update, context, url, filename)
     
     # تنظيف البيانات بعد المعالجة
     if 'url' in context.user_data:
@@ -320,8 +482,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "3. اختر طريقة الإرسال\n\n"
         "🔧 **طرق الإرسال المتاحة:**\n"
         "• 📤 **إرسال مباشر:** أرسل الملف لك مباشرة عبر تليجرام\n"
-        "• ☁️ **رفع إلى Pixeldrain:** تحصل على رابط تحميل مباشر\n\n"
+        "• ☁️ **رفع إلى خدمة تخزين:** تحصل على رابط تحميل مباشر\n\n"
         f"⚠️ **حدود الإرسال المباشر:** {MAX_DIRECT_SIZE} MB\n\n"
+        "🌐 **الخدمات المدعومة:** file.io, gofile.io, anonfiles.com\n\n"
         "🚀 ابدأ الآن بإرسال رابط الفيديو!"
     )
     await update.message.reply_text(welcome_text, parse_mode='Markdown')
@@ -329,23 +492,27 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """معالجة أمر /help"""
     help_text = (
-        "📖 **مساعدة في استخدام البوت:**\n\n"
-        "**خطوات الاستخدام:**\n"
-        "1. أرسل رابط الفيديو (يجب أن يكون رابطاً مباشراً للتحميل)\n"
-        "2. أرسل اسم الحلقة أو الملف\n"
-        "3. اختر طريقة الإرسال:\n"
-        "   - 📤 **إرسال مباشر:** للملفات الصغيرة (أقل من {MAX_DIRECT_SIZE}MB)\n"
-        "   - ☁️ **رفع إلى Pixeldrain:** للملفات الكبيرة (تحصل على رابط تحميل مباشر)\n\n"
-        "**ملاحظات مهمة:**\n"
-        "• الروابط يجب أن تكون مباشرة للتحميل\n"
-        "• الإرسال المباشر قد يفشل للملفات الكبيرة\n"
-        "• روابط Pixeldrain صالحة لمدة 30 يومًا من آخر تحميل\n"
-        "• يمكن للبوت التعامل مع معظم صيغ الفيديو\n\n"
-        "**مشاكل شائعة:**\n"
-        "• إذا فشل الإرسال المباشر: استخدم خيار Pixeldrain\n"
-        "• إذا فشل التحميل: تأكد من صحة الرابط\n"
-        "• إذا لم يظهر خيار الإرسال: أعد إرسال الرابط"
-    ).format(MAX_DIRECT_SIZE=MAX_DIRECT_SIZE)
+        f"📖 **مساعدة في استخدام البوت:**\n\n"
+        f"**خطوات الاستخدام:**\n"
+        f"1. أرسل رابط الفيديو (يجب أن يكون رابطاً مباشراً للتحميل)\n"
+        f"2. أرسل اسم الحلقة أو الملف\n"
+        f"3. اختر طريقة الإرسال:\n"
+        f"   - 📤 **إرسال مباشر:** للملفات الصغيرة (أقل من {MAX_DIRECT_SIZE}MB)\n"
+        f"   - ☁️ **رفع إلى خدمة تخزين:** للملفات الكبيرة (تحصل على رابط تحميل مباشر)\n\n"
+        f"**الخدمات المتاحة:**\n"
+        f"• file.io - صالح لمدة 14 يومًا\n"
+        f"• gofile.io - صالح لمدة 10 أيام\n"
+        f"• anonfiles.com - صالح لمدة غير محددة\n\n"
+        f"**ملاحظات مهمة:**\n"
+        f"• الروابط يجب أن تكون مباشرة للتحميل\n"
+        f"• الإرسال المباشر قد يفشل للملفات الكبيرة\n"
+        f"• يمكن مشاركة روابط التحميل مع الآخرين\n"
+        f"• البوت يحاول عدة خدمات تلقائياً إذا فشلت إحداها\n\n"
+        f"**مشاكل شائعة:**\n"
+        f"• إذا فشل الإرسال المباشر: استخدم خيار الخدمة السحابية\n"
+        f"• إذا فشل التحميل: تأكد من صحة الرابط\n"
+        f"• إذا لم يظهر خيار الإرسال: أعد إرسال الرابط"
+    )
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -353,13 +520,6 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # تنظيف بيانات المستخدم
     context.user_data.clear()
     await update.message.reply_text("✅ تم إلغاء العملية الحالية. يمكنك البدء من جديد بإرسال رابط.")
-
-# --- دالة لإعادة التعيين ---
-async def reset_user_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """إعادة تعيين بيانات المستخدم عند إرسال رابط جديد"""
-    # تنظيف البيانات القديمة عند بدء عملية جديدة
-    if 'url' in context.user_data or 'filename' in context.user_data:
-        context.user_data.clear()
 
 def main():
     # تشغيل خادم Flask لإبقاء البوت نشطًا
@@ -369,9 +529,6 @@ def main():
         logger.error("Error: BOT_TOKEN is not set!")
         print("Error: BOT_TOKEN is not set!")
         return
-    
-    if not PIXELDRAIN_API_KEY:
-        logger.warning("PIXELDRAIN_API_KEY is not set. Pixeldrain uploads will be anonymous.")
     
     logger.info("Starting bot...")
     
@@ -384,7 +541,7 @@ def main():
     app_bot.add_handler(CommandHandler("help", help_command))
     app_bot.add_handler(CommandHandler("cancel", cancel_command))
     
-    # معالج الروابط (Regex) مع إعادة التعيين
+    # معالج الروابط (Regex)
     app_bot.add_handler(MessageHandler(
         filters.Regex(r'^https?://') & ~filters.COMMAND, 
         request_episode_name
